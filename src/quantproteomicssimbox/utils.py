@@ -1,0 +1,1 @@
+amino_acids = set("ACDEFGHIKLMNPQRSTVWY")
