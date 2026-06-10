@@ -2,17 +2,14 @@ import numpy as np
 
 from .utils import amino_acids
 
-# Stable, ordered alphabet so that sequence sampling is reproducible under a seeded RNG
-# (iteration order of the `amino_acids` set is not guaranteed stable across processes).
+# Sorted for a stable order -> reproducible seeded sampling (set iteration order isn't stable).
 AMINO_ACIDS = tuple(sorted(amino_acids))
 
 class Peptide:
-    """A distinct peptide species produced by digesting a Protein.
+    """A distinct peptide species from digesting a Protein.
 
-    `abundance` is the species' copy count in a ground-truth Protein, or its simulated
-    intensity in an observed Sample (see observation.py) — the object's role determines which.
-    `start_index`/`end_index` are absolute, inclusive protein coordinates; `mod_sites` are the
-    absolute serine positions modified in this species.
+    `abundance` is the ground-truth copy count, or the simulated intensity in a Sample
+    (observation.py). Indices are absolute/inclusive; `mod_sites` are absolute modified serines.
     """
 
     def __init__(
@@ -57,10 +54,8 @@ class Protein:
             self.digestion_map = [[] for _ in range(self.abundance)]
 
         else:
-            # Per-site miss weight, inversely proportional to the shorter of the two flanking peptides
-            # (shorter peptides are merged with higher probability, per the paper). prev_cut/next_cut
-            # are the cut positions bounding each site's two adjacent peptides, with the sequence
-            # start (-1) and end (len-1) standing in at the termini.
+            # Miss weight per site = 1 / shorter flanking peptide (shorter peptides merge more, per
+            # the paper). prev_cut/next_cut bound each site's two peptides; termini stand in at -1/len-1.
             prev_cut = np.empty(n_sites, dtype=int)
             prev_cut[0] = -1
             prev_cut[1:] = sites[:-1]
@@ -71,16 +66,15 @@ class Protein:
             right_len = next_cut - sites
             min_len = np.minimum(left_len, right_len)
 
-            missable = min_len > 0 # zero-length flanking peptide can lead to division by zero, so exclude them.
+            missable = min_len > 0  # exclude zero-length (terminal) flanks: no merge, avoids /0
             weights = np.zeros(n_sites, dtype=float)
-            weights[missable] =  1.0 / min_len[missable]
+            weights[missable] = 1.0 / min_len[missable]
             total_weight = weights.sum()
-            if total_weight > 0:  # all sites non-missable (e.g. a lone terminal cut) -> no normalisation
+            if total_weight > 0:  # 0 only when no site is missable (lone terminal cut)
                 weights /= total_weight
 
-            # The miscleavage_rate sets the proportion of sites missed; sample exactly that many per
-            # proteoform copy, without replacement, weighted toward shorter flanking peptides. The
-            # kept (cleaved) sites are the complement, so digestion_map[m] lists copy m's cleaved sites.
+            # Miss round(rate * n_sites) sites per copy, sampled without replacement by weight;
+            # digestion_map[m] is the kept (cleaved) complement.
             n_missed = int(round(miscleavage_rate * n_sites))
             n_missed = min(max(n_missed, 0), int(missable.sum()))
             self.digestion_map = []
@@ -93,13 +87,12 @@ class Protein:
                 keep_mask[missed] = False
                 self.digestion_map.append(sites[keep_mask].tolist())
  
-        # Peptide quantification: split each proteoform copy at its kept cut sites and aggregate
-        # identical peptide species (same span and same modified sites, in protein coordinates) into
-        # Peptide objects. abundance counts how many copies produced each species.
+        # Split each copy at its kept cuts; aggregate identical species (same span + modified sites)
+        # into Peptides whose abundance counts the copies that produced them.
         peptides_by_id: dict[tuple[int, int, tuple[int, ...]], Peptide] = {}
         for form in range(self.abundance):
             mod_row = self.mod_table[form]
-            # Peptide spans [start_index, end_index], inclusive, between consecutive kept cut sites.
+            # Peptide spans [start, end] inclusive between kept cuts.
             bounds = []
             start = 0
             for site in self.digestion_map[form]:
@@ -128,13 +121,11 @@ class Protein:
     def set_quantification(self, abundance: int = 1, miscleavage_rate: float = 0.0) -> None:
         self.abundance = abundance
 
-        # Per-site occupancy follows the paper's model (Eq. 1): for each modifiable serine r,
-        # draw a count m_r ~ U(1, M) of copies to modify, then mark that many randomly chosen
-        # copies as modified. This is uniform over [1, M], unlike an independent 50/50 coin per
-        # copy (which would instead pin expected occupancy at M/2).
+        # Occupancy model (paper Eq. 1): for each serine, modify m_r ~ U(1, M) randomly chosen
+        # copies. Uniform over [1, M], unlike a per-copy 50/50 coin (which pins occupancy at M/2).
         table = np.zeros((abundance, len(self.sequence)))
         for i in self.serine_map:
-            m_r = int(self.rng.integers(1, abundance + 1))  # inclusive upper bound -> U(1, M)
+            m_r = int(self.rng.integers(1, abundance + 1))  # U(1, M), inclusive
             modified = self.rng.choice(abundance, size=m_r, replace=False)
             table[modified, i] = 1
         self.mod_table = table

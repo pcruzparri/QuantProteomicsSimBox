@@ -3,9 +3,7 @@
 import numpy as np
 import pytest
 
-# A fixed seed keeps the stochastic simulation deterministic across runs so that
-# statistical assertions (occupancy ranges, realized miscleavage rates, weighting)
-# are reproducible rather than flaky.
+# Fixed seed -> deterministic simulation so statistical assertions don't flake.
 SEED = 12345
 
 
