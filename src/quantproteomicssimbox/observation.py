@@ -4,7 +4,7 @@ Turns a Protein's true peptide copy numbers into the data the pipeline sees — 
 model (Eqs. 2-5), optional position-agnostic collapse, missingness — one Sample per subject.
 Never mutates the Protein.
 
-Scaffold: noise model and missingness are stubbed; only aggregate_peptides is implemented.
+Missingness (apply_missingness) is not yet implemented; the observation model itself is.
 """
 
 from dataclasses import dataclass, field
@@ -62,27 +62,68 @@ def aggregate_peptides(peptides: list[Peptide], position_aware: bool = False) ->
 class ObservationModel:
     """Generates observed Samples from a ground-truth Protein.
 
-    Parameters mirror the paper's observation model. The random draws are not implemented
-    yet — this is the structural scaffold for the future simulation layer.
+    Implements the paper's observation model (Eqs. 2-5): a per-subject effect
+    beta_ik ~ N(0, var_subject) and a per-site effect alpha_r ~ N(0, var_site), combined as a
+    2 ** (beta_ik + sum_{r in S} alpha_r) factor on each peptide's abundance. var_subject/var_site
+    are the Normal *variances* (the paper's swept "variance levels"), so the std-dev passed to the
+    draw is their square root. Draws are cached so each subject and each site is sampled once and
+    reused. Missingness is not yet implemented.
     """
 
     def __init__(
         self,
-        sigma_subject: float = 0.0,
-        sigma_site: float = 0.0,
+        var_subject: float = 0.0,
+        var_site: float = 0.0,
         position_aware: bool = False,
         rng: np.random.Generator | None = None,
     ) -> None:
-        self.sigma_subject = sigma_subject  # beta_k ~ N(0, .): per-subject effect (Eq. 4)
-        self.sigma_site = sigma_site  # alpha_r ~ N(0, .): per-site effect (Eq. 5)
+        self.var_subject = var_subject  # beta_ik ~ N(0, var_subject): per-subject variance (Eq. 4)
+        self.var_site = var_site  # alpha_r ~ N(0, var_site): per-site variance (Eq. 5)
         self.position_aware = position_aware  # collapse indistinguishable peptides in a Sample?
         self.rng = rng if rng is not None else np.random.default_rng()
+        # beta_ik (Eq. 4): one draw per (group, subject), reused across all that subject's peptides and proteins.
+        self.subject_effects: dict[tuple[int, int], float] = {}
+        # alpha_r (Eq. 5): one draw per (protein sequence, absolute site), reused across all subjects and groups.
+        self.site_effects: dict[tuple[str, int], float] = {}
 
     def sample(self, protein: Protein, group: int, subject: int) -> Sample:
-        """One observed Sample for (group, subject): apply Eqs. 2-5, aggregate per
-        position_aware, apply missingness. Not implemented yet.
+        """One observed Sample for (group, subject).
+
+        Applies the observation model (Eqs. 2-5) to each *true* peptide species — scaling its
+        abundance by ``2 ** (beta_ik + sum_{r in S} alpha_r)`` — then collapses indistinguishable
+        species via ``aggregate_peptides`` (summing observed intensities). Effects are applied
+        before aggregation so each species uses its own absolute sites. Never mutates the Protein;
+        missingness is applied separately (not yet implemented).
         """
-        raise NotImplementedError("Observation model not yet implemented")
+        subject_key = (group, subject)
+        if subject_key not in self.subject_effects:
+            self.subject_effects[subject_key] = self.rng.normal(0, np.sqrt(self.var_subject))  # beta_ik (Eq. 4)
+        beta = self.subject_effects[subject_key]
+
+        observed: list[Peptide] = []
+        for pep in protein.peptides:
+            exponent = beta  # log2-space shift = beta_ik + sum_{r in S} alpha_r (Eq. 3)
+            for mod_site in pep.mod_sites:
+                site_key = (protein.sequence, mod_site)  # alpha is a property of the site, not the peptide form
+                if site_key not in self.site_effects:
+                    self.site_effects[site_key] = self.rng.normal(0, np.sqrt(self.var_site))  # alpha_r (Eq. 5)
+                exponent += self.site_effects[site_key]
+            observed.append(
+                Peptide(
+                    pep.sequence,
+                    abundance=pep.abundance * 2**exponent,
+                    start_index=pep.start_index,
+                    end_index=pep.end_index,
+                    mod_sites=list(pep.mod_sites),
+                )
+            )
+
+        return Sample(
+            protein_sequence=protein.sequence,
+            group=group,
+            subject=subject,
+            peptides=aggregate_peptides(observed, self.position_aware),
+        )
 
     def sample_group(self, protein: Protein, group: int, n_subjects: int) -> list[Sample]:
         """Produce observed Samples for every subject in a group."""

@@ -116,22 +116,25 @@ is the *observation* layer that derives noisy observed data from that truth with
   `position_aware=True` it also keys on start position (no cross-locus merge). Agnostic (default)
   mirrors that bottom-up MS cannot distinguish identical sequences at different loci; merged species
   keep the first occurrence's position fields. Returns new `Peptide`s (inputs untouched).
-- `ObservationModel(sigma_subject, sigma_site, position_aware, rng)` — **scaffold only**.
-  `sample()`/`sample_group()`/`apply_missingness()` are stubbed (`NotImplementedError`); will apply
-  Eqs. 2–5 and missingness to produce `Sample`s.
+- `ObservationModel(var_subject, var_site, position_aware, rng)` — applies the observation model
+  (Eqs. 2–5): `sample()`/`sample_group()` are **implemented** (per-subject `beta_ik` and per-site
+  `alpha_r` Normal effects, with `var_*` interpreted as variances). Only `apply_missingness()` is
+  still stubbed (`NotImplementedError`).
 
-**Not yet implemented** (replication backlog): the observation model body (site/subject random
-effects, Eqs. 2–5) producing per-subject `Sample`s; experimental groups & true log₂FC; missingness
-(TMT & label-free); the roll-up methods in `rollups.py` (rollup/rrollup/zrollup × mean/median/sum)
-consuming `Sample` peptide tables; the entire **LiP-MS** pipeline (masking, ProK digest, two-stage
-digestion, ProK-site roll-up); and RMSE evaluation/sweep harness.
+**Not yet implemented** (replication backlog): TMT & label-free missingness
+(`ObservationModel.apply_missingness`); experimental groups & true log₂FC; the `rrollup`/`zrollup`
+scaling methods and the LiP ProK-site table builder in `rollups.py` (the `rollup` scaling, the
+mean/median/sum aggregations, the PTM site-table builder, and the `roll_up` orchestrator are
+implemented); the entire **LiP-MS** pipeline (masking, ProK digest, two-stage digestion); and RMSE
+evaluation/sweep harness.
 
 ## Package Overview
 
 - **Package name**: `quantproteomicssimbox`
 - **Entry point**: `src/quantproteomicssimbox/__init__.py`
 - **Core modules**: `protgen.py` (ground-truth simulation), `observation.py` (observed-sample layer),
-  `rollups.py` (peptide→site aggregation, empty), `utils.py` (shared constants)
+  `rollups.py` (peptide→site roll-up: two-stage scaling × aggregation; `rrollup`/`zrollup` stubbed),
+  `utils.py` (shared constants)
 - **README.md is empty** — do not rely on it for context or requirements.
 - **Type hints**: `py.typed` is present, so type-checking tools should respect it.
 
@@ -158,7 +161,10 @@ digestion, ProK-site roll-up); and RMSE evaluation/sweep harness.
   for deeper context rather than long in-code prose.
 - **Library / package** (not a CLI app). No main entrypoint script besides `__init__.py`.
 - **`src/` layout** — imports should reference the package name, e.g. `from quantproteomicssimbox.protgen import ProteinGenerator`.
-- **`rollups.py` is currently empty** — any new rollup logic should go here to keep the module structure intact.
+- **`rollups.py`** scaffolds the paper's two-stage roll-up: `SCALINGS` (`rollup` implemented;
+  `rrollup`/`zrollup` raise `NotImplementedError`) × `AGGREGATIONS` (`mean`/`median`/`sum`),
+  `build_site_tables` (PTM peptide→site matrices), and the `roll_up` orchestrator. Extend new
+  roll-up logic here: implement `scale_rrollup`/`scale_zrollup`, and add a LiP ProK-site builder.
 - **`utils.py` is minimal** (`amino_acids` set) — shared constants only.
 - **`protgen.py` contains the core simulation logic** (`Protein` class, `ProteinGenerator` class, trypsin digestion simulation, serine modification assignment).
 - **No `__main__` blocks** in `protgen.py` or `__init__.py` — use `uv run python -c "from quantproteomicssimbox import ..."` for quick testing.

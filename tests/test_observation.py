@@ -82,11 +82,77 @@ def test_sample_defaults_to_empty_peptides():
     assert s.peptides == []
 
 
-def test_observation_model_stub_raises():
-    model = ObservationModel(sigma_subject=1.0, sigma_site=1.0)
-    protein = Protein("SAKAR", rng=np.random.default_rng(0))
-    protein.set_quantification(5)
-    with pytest.raises(NotImplementedError):
-        model.sample(protein, group=0, subject=0)
+def test_apply_missingness_not_implemented():
+    model = ObservationModel()
     with pytest.raises(NotImplementedError):
         model.apply_missingness([], rate=0.25)
+
+
+def test_sample_sets_metadata_and_float_abundances():
+    protein = Protein("SAKAR", rng=np.random.default_rng(0))
+    protein.set_quantification(5)
+    model = ObservationModel(rng=np.random.default_rng(0))
+    s = model.sample(protein, group=1, subject=2)
+    assert s.group == 1 and s.subject == 2 and s.protein_sequence == "SAKAR"
+    assert all(isinstance(pep.abundance, float) for pep in s.peptides)
+
+
+def test_sample_zero_variance_reproduces_truth():
+    # sigma=0 -> 2^0 factors -> observed abundances equal the (aggregated) ground truth.
+    gen = ProteinGenerator(rng=np.random.default_rng(7))
+    p = gen.generate_protein(80)
+    p.set_quantification(20, miscleavage_rate=0.25)
+    model = ObservationModel(var_subject=0.0, var_site=0.0, rng=np.random.default_rng(1))
+    s = model.sample(p, group=0, subject=0)
+    truth = aggregate_peptides(p.peptides, position_aware=False)
+    assert sorted(pep.abundance for pep in s.peptides) == pytest.approx(
+        sorted(float(pep.abundance) for pep in truth)
+    )
+
+
+def test_subject_effect_is_constant_factor_across_peptides():
+    # With only a subject effect (var_site=0), every peptide is scaled by the same 2^beta.
+    gen = ProteinGenerator(rng=np.random.default_rng(3))
+    p = gen.generate_protein(80)
+    p.set_quantification(20, miscleavage_rate=0.0)
+    model = ObservationModel(var_subject=1.0, var_site=0.0, rng=np.random.default_rng(2))
+    s = model.sample(p, group=0, subject=0)
+    truth = aggregate_peptides(p.peptides, position_aware=False)
+    assert len(s.peptides) == len(truth)
+    ratios = [o.abundance / t.abundance for o, t in zip(s.peptides, truth)]
+    assert ratios == pytest.approx([ratios[0]] * len(ratios))
+
+
+def test_site_effects_keyed_by_protein_not_peptide_form():
+    # Regression for the alpha-keying bug: alpha is a property of the absolute site, shared across
+    # the peptide forms that carry it (e.g. miscleavage variants). The cache therefore keys on the
+    # protein sequence + absolute site, with exactly one draw per distinct modified site.
+    gen = ProteinGenerator(rng=np.random.default_rng(5))
+    p = gen.generate_protein(120)
+    p.set_quantification(30, miscleavage_rate=0.5)
+    model = ObservationModel(var_subject=0.0, var_site=1.0, rng=np.random.default_rng(9))
+    model.sample(p, group=0, subject=0)
+    modified_sites = {site for pep in p.peptides for site in pep.mod_sites}
+    assert modified_sites  # sanity: the protein actually has modified sites
+    assert all(seq == p.sequence for seq, _site in model.site_effects)
+    assert {site for _seq, site in model.site_effects} == modified_sites
+
+
+def test_sample_does_not_mutate_protein():
+    gen = ProteinGenerator(rng=np.random.default_rng(4))
+    p = gen.generate_protein(60)
+    p.set_quantification(15, miscleavage_rate=0.2)
+    before = [(pep.sequence, pep.abundance, tuple(pep.mod_sites)) for pep in p.peptides]
+    model = ObservationModel(var_subject=1.0, var_site=1.0, rng=np.random.default_rng(0))
+    model.sample(p, group=0, subject=0)
+    after = [(pep.sequence, pep.abundance, tuple(pep.mod_sites)) for pep in p.peptides]
+    assert before == after
+
+
+def test_sample_is_deterministic_under_seed():
+    gen = ProteinGenerator(rng=np.random.default_rng(8))
+    p = gen.generate_protein(80)
+    p.set_quantification(20, miscleavage_rate=0.25)
+    s1 = ObservationModel(var_subject=1.0, var_site=1.0, rng=np.random.default_rng(123)).sample(p, 0, 0)
+    s2 = ObservationModel(var_subject=1.0, var_site=1.0, rng=np.random.default_rng(123)).sample(p, 0, 0)
+    assert [pep.abundance for pep in s1.peptides] == pytest.approx([pep.abundance for pep in s2.peptides])
