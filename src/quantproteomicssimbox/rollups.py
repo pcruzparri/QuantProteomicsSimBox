@@ -92,12 +92,14 @@ class RollupResult:
     """Site-level quantification from a (scaling, aggregation) roll-up.
 
     `values` is shape ``(n_sites, n_samples)``; row ``i`` is `sites[i]`, column ``j`` is
-    `sample_keys[j]`.
+    `sample_keys[j]`. `space` records whether the aggregation was over linear or log2 abundances,
+    so fold-change is computed correctly downstream.
     """
 
     sites: list[int]
     sample_keys: list[tuple[int, int]]
     values: np.ndarray
+    space: str = "log2"
 
 
 def build_site_tables(samples: list[Sample]) -> list[SiteTable]:
@@ -143,30 +145,94 @@ def roll_up(
     samples: list[Sample],
     scaling: str = "rollup",
     aggregation: str = "median",
+    space: str = "log2",
+    min_per_group: int = 1,
 ) -> RollupResult:
     """Two-stage roll-up: scale each site's peptide matrix, then aggregate over peptides.
 
     Produces per-site, per-sample quantification. `scaling` in {rollup, rrollup, zrollup};
-    `aggregation` in {mean, median, sum}. Group-level log2 fold-changes / RMSE scoring are computed
-    downstream from the returned `RollupResult`.
+    `aggregation` in {mean, median, sum}. `space` selects whether peptides are aggregated in
+    ``log2`` (the paper's / pmartR convention — abundances are log2-transformed first) or ``linear``
+    space. The two spaces flip which aggregator is unbiased against the occupancy truth, so the
+    matched pairs are:
+
+        space=log2   -> mean / median are unbiased; sum is inflated by the peptide count
+        space=linear -> sum is unbiased (a total); mean / median are biased by the peptide count
+
+    All four combinations are intentionally allowed (the "biased" ones — log2+sum, linear+mean —
+    are exactly what demonstrate the paper's finding).
+
+    `min_per_group` is a pmartR-style presence filter: a peptide row is kept only if observed in at
+    least that many samples of **every** group; a site with no surviving peptides is dropped (not
+    quantifiable). Default 1 drops "one-sided" species (present in one group only), which otherwise
+    blow up log2-`sum`; set 0 to disable filtering. Group log2 fold-changes / RMSE are computed
+    downstream via ``group_log2_fold_change``, which reads ``space`` off the result.
     """
     if scaling not in SCALINGS:
         raise ValueError(f"unknown scaling {scaling!r}; choose from {sorted(SCALINGS)}")
     if aggregation not in AGGREGATIONS:
         raise ValueError(f"unknown aggregation {aggregation!r}; choose from {sorted(AGGREGATIONS)}")
+    if space not in ("linear", "log2"):
+        raise ValueError(f"unknown space {space!r}; choose from ['linear', 'log2']")
     scale = SCALINGS[scaling]
     aggregate = AGGREGATIONS[aggregation]
 
     tables = build_site_tables(samples)
     sample_keys = tables[0].sample_keys if tables else []
-    sites = [t.site for t in tables]
+    sites: list[int] = []
+    rows: list[np.ndarray] = []
     with warnings.catch_warnings():
         # A site unobserved in a sample yields an all-NaN column -> NaN (intended "missing"); the
         # nan-reducers warn on that expected case, so silence just those messages.
         warnings.filterwarnings("ignore", "(All-NaN slice|Mean of empty slice)", RuntimeWarning)
-        values = (
-            np.vstack([aggregate(scale(t.matrix)) for t in tables])
-            if tables
-            else np.empty((0, len(sample_keys)))
-        )
-    return RollupResult(sites=sites, sample_keys=sample_keys, values=values)
+        for t in tables:
+            matrix = t.matrix[_presence_mask(t.matrix, sample_keys, min_per_group)]
+            if matrix.shape[0] == 0:
+                continue  # no peptide passes the presence filter -> site not quantifiable
+            sites.append(t.site)
+            # log2-transform abundances before scaling/aggregation in log space; NaN (missing) and
+            # the strictly-positive counts both pass through cleanly.
+            rows.append(aggregate(scale(_to_space(matrix, space))))
+    values = np.vstack(rows) if rows else np.empty((0, len(sample_keys)))
+    return RollupResult(sites=sites, sample_keys=sample_keys, values=values, space=space)
+
+
+def _to_space(matrix: np.ndarray, space: str) -> np.ndarray:
+    return np.log2(matrix) if space == "log2" else matrix
+
+
+def _presence_mask(matrix: np.ndarray, sample_keys: list[tuple[int, int]], min_per_group: int) -> np.ndarray:
+    """Boolean row mask: keep peptides observed in >= min_per_group samples of every group."""
+    if min_per_group <= 0:
+        return np.ones(matrix.shape[0], dtype=bool)
+    observed = ~np.isnan(matrix)
+    mask = np.ones(matrix.shape[0], dtype=bool)
+    for group in {g for g, _ in sample_keys}:
+        cols = [j for j, (g, _s) in enumerate(sample_keys) if g == group]
+        mask &= observed[:, cols].sum(axis=1) >= min_per_group
+    return mask
+
+
+def group_log2_fold_change(result: RollupResult, group_a: int, group_b: int) -> dict[int, float]:
+    """Estimated per-site log2 fold-change (group B vs A) from rolled-up site values.
+
+    Takes the nan-aware mean of each site's quantification over each group's samples. If the roll-up
+    was in ``log2`` space the values are already log2 abundances, so FC = ``mean_b - mean_a``; in
+    ``linear`` space FC = ``log2(mean_b / mean_a)``. Sites missing from a group yield nan/inf.
+
+    This is the paper's modified-peptide-intensity FC; a stoichiometry variant (modified fraction
+    over all peptides spanning the site, logit-transformed) would be a sibling helper.
+    """
+    cols_a = [j for j, (g, _s) in enumerate(result.sample_keys) if g == group_a]
+    cols_b = [j for j, (g, _s) in enumerate(result.sample_keys) if g == group_b]
+    fold_changes: dict[int, float] = {}
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", "Mean of empty slice", RuntimeWarning)
+        for i, site in enumerate(result.sites):
+            mean_a = np.nanmean(result.values[i, cols_a]) if cols_a else np.nan
+            mean_b = np.nanmean(result.values[i, cols_b]) if cols_b else np.nan
+            if result.space == "log2":
+                fold_changes[site] = float(mean_b - mean_a)
+            else:
+                fold_changes[site] = float(np.log2(mean_b / mean_a))
+    return fold_changes

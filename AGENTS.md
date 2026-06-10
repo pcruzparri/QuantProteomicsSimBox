@@ -117,24 +117,63 @@ is the *observation* layer that derives noisy observed data from that truth with
   mirrors that bottom-up MS cannot distinguish identical sequences at different loci; merged species
   keep the first occurrence's position fields. Returns new `Peptide`s (inputs untouched).
 - `ObservationModel(var_subject, var_site, position_aware, rng)` — applies the observation model
-  (Eqs. 2–5): `sample()`/`sample_group()` are **implemented** (per-subject `beta_ik` and per-site
-  `alpha_r` Normal effects, with `var_*` interpreted as variances). Only `apply_missingness()` is
-  still stubbed (`NotImplementedError`).
+  (Eqs. 2–5): `sample()`/`sample_group()` apply per-subject `beta_ik` and per-site `alpha_r` Normal
+  effects (`var_*` are variances). `apply_missingness(samples, rate)` drops
+  `round(rate · n_obs)` observations, **abundance-dependent** (prob ∝ 1/abundance, MNAR; Bramer
+  et al. label-free variant) — the TMT-plex (block) variant is the remaining refinement.
 
-**Not yet implemented** (replication backlog): TMT & label-free missingness
-(`ObservationModel.apply_missingness`); experimental groups & true log₂FC; the `rrollup`/`zrollup`
-scaling methods and the LiP ProK-site table builder in `rollups.py` (the `rollup` scaling, the
-mean/median/sum aggregations, the PTM site-table builder, and the `roll_up` orchestrator are
-implemented); the entire **LiP-MS** pipeline (masking, ProK digest, two-stage digestion); and RMSE
-evaluation/sweep harness.
+**Groups, fold change, and the Experiment layer.** Group effects live in the *ground truth* (per-group
+occupancy), not the noise model:
+- `make_group_proteins(sequence, n_groups, abundance, …)` (protgen.py) — one `Protein` per group,
+  **same sequence**, **independent occupancy**. Same sequence ⇒ `alpha` shared across groups
+  (site_effects keyed on sequence) and group samples pool in one `build_site_tables` call; `beta`
+  stays per `(group, subject)`.
+- `Protein.true_site_abundances()` + `true_site_log2_fold_change(a, b)` (protgen.py) — known per-site
+  truth: occupancy `mod_table[:, r].sum()`, and `log2(occ_b/occ_a)`.
+- `group_log2_fold_change(result, group_a, group_b)` (rollups.py) — estimated per-site FC from a
+  `RollupResult`, branching on `result.space`: log2-space values → `mean_b - mean_a`; linear → 
+  `log2(mean_b/mean_a)`. The paper's *modified-peptide-intensity* FC; the stoichiometry/logit-FC
+  variant is the planned sibling — see the [[optrollingup-reference-design]] and stoichiometry memos.
+- **Aggregation `space` (`"linear"` | `"log2"`, default `"log2"`).** `roll_up`/`Experiment` take a
+  `space`. The paper/pmartR aggregate **log2** abundances (`edata_transform(., "log2")` first), which
+  flips which aggregator is unbiased vs the occupancy truth:
+  `log2` → mean/median matched, **sum inflated by peptide count** (the paper's "sum is worst");
+  `linear` → **sum matched** (a total), mean/median biased by peptide count. All four combos are
+  intentionally allowed (no constraint) — the "biased" ones (log2+sum, linear+mean) are exactly the
+  demonstrations of the finding.
+- **Presence filter `min_per_group`** (rollups.py `roll_up`, default 1): pmartR-style — keep a peptide
+  row only if observed in ≥ that many samples of **every** group; a site with no survivors is dropped.
+  Default 1 drops "one-sided" species (present in one group only) that otherwise blow up log2-`sum`.
+  Set 0 to disable (needed for the exact linear+sum recovery check).
+- **Replication status (defaults: log2 + filter):** reproduces Fig S1–S3's *ranking* across 0/25/50%
+  missingness — mean (~0.7) < median (~0.9) ≪ sum (~5–6) — and the "robust to missingness" behaviour
+  (mean/median barely move). mean/median magnitudes ≈ the paper's ~1; **sum is still ~2× the paper's
+  ~3**, a residual from our peptide-species granularity (more span/mod variants per site than the
+  reference) — a finer modeling detail, see backlog.
+- `experiment.py` `Experiment(n_proteins, …, var_subject, var_site, missingness, rng)` — multi-protein
+  study facade: `build()` (per-group proteins) → `observe()` (one **shared** `ObservationModel`, so
+  `beta` is shared across proteins, `alpha` per protein; applies `missingness` per protein) →
+  `roll_up()` (one `RollupResult` per protein) → `score(scaling, aggregation, space, min_per_group)`
+  = RMSE of estimated vs true per-site log₂FC over all sites of all proteins. Zero-variance + `sum` +
+  `space="linear"` + `min_per_group=0` recovers truth exactly (RMSE 0).
+
+**Not yet implemented** (replication backlog): the residual **log2-`sum` magnitude gap** (~2× the
+paper's ~3 — from over-fragmented peptide species per site; would need coarser feature granularity to
+fully match); the **TMT-plex (block) missingness** variant (label-free MNAR is done); the
+`rrollup`/`zrollup` scaling methods and the LiP ProK-site table builder in `rollups.py` (the `rollup`
+scaling, mean/median/sum aggregations, the linear/log2 `space`, the `min_per_group` presence filter,
+the PTM site-table builder, `roll_up`, `group_log2_fold_change`, `apply_missingness`, and the
+`Experiment` scorer are implemented); mean RMSE ± std error across replicate `Experiment`s and the
+full >600-combo sweep; the entire **LiP-MS** pipeline (masking, ProK digest, two-stage digestion);
+and the planned **stoichiometry / logit-FC** analysis to compare against the paper's intensity FC.
 
 ## Package Overview
 
 - **Package name**: `quantproteomicssimbox`
 - **Entry point**: `src/quantproteomicssimbox/__init__.py`
-- **Core modules**: `protgen.py` (ground-truth simulation), `observation.py` (observed-sample layer),
-  `rollups.py` (peptide→site roll-up: two-stage scaling × aggregation; `rrollup`/`zrollup` stubbed),
-  `utils.py` (shared constants)
+- **Core modules**: `protgen.py` (ground-truth simulation + group occupancy), `observation.py`
+  (observed-sample layer), `rollups.py` (peptide→site roll-up + group fold-change; `rrollup`/`zrollup`
+  stubbed), `experiment.py` (multi-protein study + RMSE scoring), `utils.py` (shared constants)
 - **README.md is empty** — do not rely on it for context or requirements.
 - **Type hints**: `py.typed` is present, so type-checking tools should respect it.
 
@@ -172,9 +211,11 @@ evaluation/sweep harness.
   a seeded `rng` fixture (`SEED = 12345`) so the stochastic simulation is deterministic in tests.
   `test_protgen.py` covers the trypsin rules, the `U(1, M)` occupancy model, proportion-controlled
   weighted miscleavage, and the `Peptide` quantification (`Protein.peptides`);
-  `test_observation.py` covers `aggregate_peptides` (agnostic vs aware) and the `Sample`/
-  `ObservationModel` scaffold; `test_utils.py` covers the amino-acid set. Run
-  with `uv run pytest`. Config is in `[tool.pytest.ini_options]` of `pyproject.toml`.
+  `test_observation.py` covers `aggregate_peptides` (agnostic vs aware) and the `ObservationModel`;
+  `test_rollups.py` covers the roll-up + `group_log2_fold_change`; `test_experiment.py` covers the
+  multi-protein `Experiment` (shared β / per-protein α, pooled roll-up, zero-variance RMSE = 0);
+  `test_utils.py` covers the amino-acid set. Run with `uv run pytest`. Config is in
+  `[tool.pytest.ini_options]` of `pyproject.toml`.
 - **No CI/CD workflows** (no `.github/workflows/` directory). No pre-commit hooks or linting/formatting configured.
 - **No build or deploy scripts** — the project is currently a local library.
 

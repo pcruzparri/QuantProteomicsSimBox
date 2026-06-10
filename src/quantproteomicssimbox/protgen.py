@@ -131,6 +131,12 @@ class Protein:
         self.mod_table = table
         self.digest(miscleavage_rate)
 
+    def true_site_abundances(self) -> dict[int, int]:
+        """Ground-truth modified-copy count (occupancy m_r) per serine site."""
+        if self.mod_table is None:
+            raise ValueError("set_quantification() must be called before true_site_abundances()")
+        return {r: int(self.mod_table[:, r].sum()) for r in self.serine_map}
+
 
 class ProteinGenerator:
     def __init__(self, rng: np.random.Generator | None = None) -> None:
@@ -141,3 +147,36 @@ class ProteinGenerator:
 
     def generate_protein(self, length: int) -> Protein:
         return Protein(self.generate_sequence(length), rng=self.rng)
+
+
+def make_group_proteins(
+    sequence: str,
+    n_groups: int,
+    abundance: int,
+    miscleavage_rate: float = 0.0,
+    rng: np.random.Generator | None = None,
+) -> list[Protein]:
+    """One ground-truth Protein per group: same sequence, independent per-group occupancy.
+
+    Group differences come from independent m_r ~ U(1, M) draws, so each group gets its own true
+    site abundances (a known per-site log2FC). The shared sequence keeps the observation layer's
+    site effects (keyed on sequence) shared across groups — a site effect is measurement bias, not a
+    group difference.
+    """
+    rng = rng if rng is not None else np.random.default_rng()
+    proteins = []
+    for _ in range(n_groups):
+        protein = Protein(sequence, rng=rng)
+        protein.set_quantification(abundance, miscleavage_rate)
+        proteins.append(protein)
+    return proteins
+
+
+def true_site_log2_fold_change(protein_a: Protein, protein_b: Protein) -> dict[int, float]:
+    """Known per-site log2 fold-change (group B vs A) from ground-truth occupancy."""
+    if protein_a.sequence != protein_b.sequence:
+        raise ValueError("Proteins must have the same sequence to compare true site log2FC")
+
+    occ_a = protein_a.true_site_abundances()
+    occ_b = protein_b.true_site_abundances()
+    return {r: float(np.log2(occ_b[r] / occ_a[r])) for r in occ_a}

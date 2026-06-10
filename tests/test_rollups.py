@@ -15,6 +15,7 @@ from quantproteomicssimbox.rollups import (
     RollupResult,
     SiteTable,
     build_site_tables,
+    group_log2_fold_change,
     roll_up,
     scale_rollup,
 )
@@ -106,16 +107,17 @@ def test_build_site_tables_empty():
 # roll_up orchestrator
 # --------------------------------------------------------------------------- #
 def test_roll_up_rollup_sum_end_to_end():
-    res = roll_up(_two_sample_dataset(), scaling="rollup", aggregation="sum")
+    res = roll_up(_two_sample_dataset(), scaling="rollup", aggregation="sum", space="linear")
     assert isinstance(res, RollupResult)
     assert res.sites == [0, 5]
     assert res.sample_keys == [(0, 0), (0, 1)]
+    assert res.space == "linear"
     # site 0: 10+4=14, 30+6=36 ; site 5: nansum(nan)=0, 5
     np.testing.assert_allclose(res.values, np.array([[14.0, 36.0], [0.0, 5.0]]))
 
 
 def test_roll_up_rollup_median():
-    res = roll_up(_two_sample_dataset(), scaling="rollup", aggregation="median")
+    res = roll_up(_two_sample_dataset(), scaling="rollup", aggregation="median", space="linear")
     # site 0 medians over the two peptides: [7, 18]
     np.testing.assert_allclose(res.values[0], np.array([7.0, 18.0]))
     # site 5 is unobserved in subject 0 -> NaN (missing), present (5.0) in subject 1.
@@ -123,14 +125,67 @@ def test_roll_up_rollup_median():
     assert res.values[1, 1] == pytest.approx(5.0)
 
 
+def test_roll_up_log2_space_transforms_before_aggregating():
+    # Default space is log2: site-0 sum is log2(10)+log2(4) for subject 0, not 14.
+    res = roll_up(_two_sample_dataset(), scaling="rollup", aggregation="sum")
+    assert res.space == "log2"
+    assert res.values[0, 0] == pytest.approx(np.log2(10.0) + np.log2(4.0))
+
+
 def test_roll_up_rejects_unknown_methods():
     with pytest.raises(ValueError):
         roll_up(_two_sample_dataset(), scaling="bogus")
     with pytest.raises(ValueError):
         roll_up(_two_sample_dataset(), aggregation="bogus")
+    with pytest.raises(ValueError):
+        roll_up(_two_sample_dataset(), space="bogus")
 
 
 @pytest.mark.parametrize("scaling", ["rrollup", "zrollup"])
 def test_roll_up_advanced_scalings_are_stubbed(scaling):
     with pytest.raises(NotImplementedError):
         roll_up(_two_sample_dataset(), scaling=scaling)
+
+
+# --------------------------------------------------------------------------- #
+# group_log2_fold_change
+# --------------------------------------------------------------------------- #
+def test_group_log2_fold_change_linear_space_uses_ratio():
+    result = RollupResult(
+        sites=[5, 9],
+        sample_keys=[(0, 0), (0, 1), (1, 0), (1, 1)],
+        values=np.array([[2.0, 2.0, 4.0, 4.0], [1.0, 1.0, 1.0, 1.0]]),
+        space="linear",
+    )
+    fc = group_log2_fold_change(result, group_a=0, group_b=1)
+    assert fc[5] == pytest.approx(1.0)  # log2(mean[4,4] / mean[2,2])
+    assert fc[9] == pytest.approx(0.0)  # log2(1 / 1)
+
+
+def test_presence_filter_drops_one_sided_species():
+    # Site 0 carried by a shared species (both groups) plus one present only in group 1.
+    samples = [
+        Sample("X", group=0, subject=0,
+               peptides=[Peptide("SK", abundance=10.0, start_index=0, end_index=1, mod_sites=[0])]),
+        Sample("X", group=1, subject=0, peptides=[
+            Peptide("SK", abundance=20.0, start_index=0, end_index=1, mod_sites=[0]),
+            Peptide("SAK", abundance=5.0, start_index=0, end_index=2, mod_sites=[0]),  # one-sided
+        ]),
+    ]
+    col = lambda res: res.sample_keys.index((1, 0))
+    raw = roll_up(samples, aggregation="sum", space="linear", min_per_group=0)
+    filt = roll_up(samples, aggregation="sum", space="linear", min_per_group=1)
+    assert raw.values[0, col(raw)] == pytest.approx(25.0)  # 20 (SK) + 5 (SAK)
+    assert filt.values[0, col(filt)] == pytest.approx(20.0)  # one-sided SAK dropped
+
+
+def test_group_log2_fold_change_log2_space_uses_difference():
+    # Values are already log2 abundances -> FC is the difference of group means, not a log-ratio.
+    result = RollupResult(
+        sites=[5],
+        sample_keys=[(0, 0), (0, 1), (1, 0), (1, 1)],
+        values=np.array([[1.0, 1.0, 3.5, 3.5]]),
+        space="log2",
+    )
+    fc = group_log2_fold_change(result, group_a=0, group_b=1)
+    assert fc[5] == pytest.approx(2.5)  # 3.5 - 1.0

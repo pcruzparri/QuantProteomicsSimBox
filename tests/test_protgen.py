@@ -9,7 +9,14 @@ quantification stored as ``Protein.peptides`` (a list of ``Peptide`` objects).
 import numpy as np
 import pytest
 
-from quantproteomicssimbox.protgen import AMINO_ACIDS, Peptide, Protein, ProteinGenerator
+from quantproteomicssimbox.protgen import (
+    AMINO_ACIDS,
+    Peptide,
+    Protein,
+    ProteinGenerator,
+    make_group_proteins,
+    true_site_log2_fold_change,
+)
 from quantproteomicssimbox.utils import amino_acids
 
 
@@ -276,3 +283,34 @@ def test_repeat_digest_resets_peptides(rng):
     p.digest(miscleavage_rate=0.2)
     second = sum(pep.abundance for pep in p.peptides)
     assert first == second == 40  # 2 peptides x 20 copies; must not accumulate across digests
+
+
+# --------------------------------------------------------------------------- #
+# Group occupancy / ground-truth fold change
+# --------------------------------------------------------------------------- #
+def test_true_site_abundances_match_mod_table(rng):
+    p = Protein("SKSAS", rng=rng)
+    p.set_quantification(100)
+    occ = p.true_site_abundances()
+    assert set(occ) == set(p.serine_map)
+    for r in p.serine_map:
+        assert occ[r] == int(p.mod_table[:, r].sum())
+        assert 1 <= occ[r] <= 100  # m_r ~ U(1, M)
+
+
+def test_make_group_proteins_share_sequence_independent_occupancy():
+    sequence = ProteinGenerator(rng=np.random.default_rng(0)).generate_sequence(120)
+    groups = make_group_proteins(sequence, n_groups=2, abundance=200, rng=np.random.default_rng(1))
+    assert [g.sequence for g in groups] == [sequence, sequence]
+    # Independent occupancy draws -> at least one site differs between groups.
+    occ0, occ1 = groups[0].true_site_abundances(), groups[1].true_site_abundances()
+    assert any(occ0[r] != occ1[r] for r in occ0)
+
+
+def test_true_site_log2_fold_change_matches_occupancy_ratio():
+    sequence = ProteinGenerator(rng=np.random.default_rng(2)).generate_sequence(120)
+    a, b = make_group_proteins(sequence, 2, 200, rng=np.random.default_rng(3))
+    fc = true_site_log2_fold_change(a, b)
+    occ_a, occ_b = a.true_site_abundances(), b.true_site_abundances()
+    for r in occ_a:
+        assert fc[r] == pytest.approx(np.log2(occ_b[r] / occ_a[r]))

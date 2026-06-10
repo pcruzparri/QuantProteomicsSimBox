@@ -82,10 +82,49 @@ def test_sample_defaults_to_empty_peptides():
     assert s.peptides == []
 
 
-def test_apply_missingness_not_implemented():
-    model = ObservationModel()
-    with pytest.raises(NotImplementedError):
-        model.apply_missingness([], rate=0.25)
+def _missingness_samples(rng):
+    gen = ProteinGenerator(rng=rng)
+    p = gen.generate_protein(120)
+    p.set_quantification(50, miscleavage_rate=0.25)
+    model = ObservationModel(var_subject=1.0, var_site=1.0, rng=rng)
+    return model, model.sample_group(p, group=0, n_subjects=10)
+
+
+def test_missingness_rate_zero_is_identity():
+    model, samples = _missingness_samples(np.random.default_rng(0))
+    assert model.apply_missingness(samples, 0.0) is samples
+
+
+def test_missingness_drops_target_fraction():
+    model, samples = _missingness_samples(np.random.default_rng(1))
+    total = sum(len(s.peptides) for s in samples)
+    out = model.apply_missingness(samples, 0.3)
+    assert sum(len(s.peptides) for s in out) == total - round(0.3 * total)
+
+
+def test_missingness_is_abundance_dependent():
+    # Low-abundance observations drop more often, so survivors skew high-abundance.
+    model, samples = _missingness_samples(np.random.default_rng(2))
+    all_ab = sorted(pep.abundance for s in samples for pep in s.peptides)
+    median_ab = all_ab[len(all_ab) // 2]
+    out = model.apply_missingness(samples, 0.4)
+    kept = [pep.abundance for s in out for pep in s.peptides]
+    assert np.mean([a < median_ab for a in kept]) < 0.5
+
+
+def test_missingness_does_not_mutate_inputs():
+    model, samples = _missingness_samples(np.random.default_rng(3))
+    before = [len(s.peptides) for s in samples]
+    model.apply_missingness(samples, 0.3)
+    assert [len(s.peptides) for s in samples] == before
+
+
+def test_missingness_deterministic_under_seed():
+    def run():
+        model, samples = _missingness_samples(np.random.default_rng(4))
+        return [len(s.peptides) for s in model.apply_missingness(samples, 0.3)]
+
+    assert run() == run()
 
 
 def test_sample_sets_metadata_and_float_abundances():

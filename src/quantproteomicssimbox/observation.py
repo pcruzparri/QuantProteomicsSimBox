@@ -4,7 +4,8 @@ Turns a Protein's true peptide copy numbers into the data the pipeline sees — 
 model (Eqs. 2-5), optional position-agnostic collapse, missingness — one Sample per subject.
 Never mutates the Protein.
 
-Missingness (apply_missingness) is not yet implemented; the observation model itself is.
+Implements the observation model and abundance-dependent missingness (apply_missingness, label-free
+variant); the TMT-plex (block) missingness variant is a future refinement.
 """
 
 from dataclasses import dataclass, field
@@ -130,5 +131,39 @@ class ObservationModel:
         return [self.sample(protein, group, subject) for subject in range(n_subjects)]
 
     def apply_missingness(self, samples: list[Sample], rate: float) -> list[Sample]:
-        """Remove observations to reach a global missingness target (Bramer et al.). Not implemented yet."""
-        raise NotImplementedError("Missingness not yet implemented")
+        """Drop observations to a global missingness target (Bramer et al., label-free variant).
+
+        Missingness is abundance-dependent (MNAR): each (sample, peptide) observation is dropped with
+        probability ``proportional to 1 / abundance``, so low-abundance peptides go missing more
+        often. Exactly ``round(rate * total_observations)`` observations are removed, sampled without
+        replacement by that weight. Returns new `Sample`s (inputs untouched); a dropped peptide is
+        simply absent from its sample (→ NaN in the roll-up matrix). The TMT-plex (labeled, block)
+        variant is a future refinement.
+        """
+        if rate <= 0:
+            return samples
+        observations = [
+            (si, pi, pep.abundance)
+            for si, s in enumerate(samples)
+            for pi, pep in enumerate(s.peptides)
+        ]
+        if not observations:
+            return samples
+        n_drop = min(int(round(rate * len(observations))), len(observations))
+        if n_drop == 0:
+            return samples
+
+        weights = np.array([1.0 / abundance for *_, abundance in observations])
+        weights /= weights.sum()
+        dropped = self.rng.choice(len(observations), size=n_drop, replace=False, p=weights)
+        drop_set = {(observations[i][0], observations[i][1]) for i in dropped}
+
+        return [
+            Sample(
+                protein_sequence=s.protein_sequence,
+                group=s.group,
+                subject=s.subject,
+                peptides=[pep for pi, pep in enumerate(s.peptides) if (si, pi) not in drop_set],
+            )
+            for si, s in enumerate(samples)
+        ]
