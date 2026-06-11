@@ -216,14 +216,16 @@ matrix), then a selectable transform.
 
 **Not yet implemented** (replication backlog): the residual **log2-`sum` magnitude gap** (~2× the
 paper's ~3 — from over-fragmented peptide species per site; would need coarser feature granularity to
-fully match); the **TMT-plex (block) missingness** variant (label-free MNAR is done); the
-`rrollup`/`zrollup` scaling methods and the LiP ProK-site table builder in `rollups/` (the `rollup`
-scaling, mean/median/sum aggregations, the linear/log2 `space`, the `min_per_group` presence filter,
-the PTM site-table builder, `roll_up`, `group_site_change`, `apply_missingness`, and the unified
-`Experiment.score(method)` are implemented); mean RMSE ± std error across replicate `Experiment`s and the
-full >600-combo sweep; and the entire **LiP-MS** pipeline (masking, ProK digest, two-stage digestion).
-The **stoichiometry / logit-FC** analysis is now implemented (see the Stoichiometry roll-up section
-above); its remaining exploration directions are in the backlog below.
+fully match); the **TMT-plex (block) missingness** variant (label-free MNAR is done); the LiP ProK-site
+table builder in `rollups/`; and the entire **LiP-MS** pipeline (masking, ProK digest, two-stage
+digestion). The full PTM intensity + stoichiometry roll-up is implemented (all three scalings
+`rollup`/`rrollup`/`zrollup`, mean/median/sum aggregations, linear/log2 `space`, the `min_per_group`
+presence filter, the PTM site-table builder, `roll_up`, `group_site_change`, `apply_missingness`, and
+the unified `Experiment.score(method)`); the **sweep harness** (`sweep.run_sweep`, mean RMSE ± std error
+across replicate `Experiment`s over a parameter grid) is implemented — running the full >600-combo grid
+to a results table is the remaining replication step. The **stoichiometry / logit-FC** analysis is also
+implemented (see the Stoichiometry roll-up section above); its remaining exploration directions are in
+the backlog below.
 
 **Stoichiometry exploration backlog** (research directions to build toward, now that the base
 stoichiometry roll-up has landed — per-site fraction = mod abundance / total spanning abundance, with
@@ -262,7 +264,7 @@ stoichiometry roll-up has landed — per-site fraction = mod abundance / total s
 - **Core modules**: `protgen/` package (ground-truth simulation + group occupancy: `peptide`,
   `protein`, `generator`, `truth`), `observation.py`
   (observed-sample layer), `rollups/` package (`core` shared types + `group_site_change` + span
-  helpers; `intensity`; `stoichiometry`; `rrollup`/`zrollup` stubbed), `methods.py`
+  helpers; `intensity`; `stoichiometry`), `methods.py`
   (`QuantMethod` strategy + `intensity_method`/`stoichiometry_method` factories + `QUANT_METHODS`),
   `experiment.py` (multi-protein study + unified `score(method)`), `utils.py` (shared constants +
   the `logit2` helper)
@@ -292,12 +294,12 @@ stoichiometry roll-up has landed — per-site fraction = mod abundance / total s
   for deeper context rather than long in-code prose.
 - **Library / package** (not a CLI app). No main entrypoint script besides `__init__.py`.
 - **`src/` layout** — imports should reference the package name, e.g. `from quantproteomicssimbox.protgen import ProteinGenerator`.
-- **`rollups/` package** holds the roll-up families: `intensity.py` scaffolds the paper's two-stage
-  roll-up — `SCALINGS` (`rollup` implemented; `rrollup`/`zrollup` raise `NotImplementedError`) ×
-  `AGGREGATIONS` (`mean`/`median`/`sum`), `build_site_tables`, and the `roll_up` orchestrator;
-  `stoichiometry.py` holds the fraction roll-up; `core.py` the shared `RollupResult`/`Space`/
-  `group_site_change` + span helpers. Extend here: implement `scale_rrollup`/`scale_zrollup`, add a
-  LiP ProK-site builder, register new stoichiometry methods. New scoring methods go in `methods.py`.
+- **`rollups/` package** holds the roll-up families: `intensity.py` implements the paper's two-stage
+  roll-up — `SCALINGS` (`rollup`/`rrollup`/`zrollup`, all implemented) × `AGGREGATIONS`
+  (`mean`/`median`/`sum`), `build_site_tables`, and the `roll_up` orchestrator; `stoichiometry.py`
+  holds the fraction roll-up; `core.py` the shared `RollupResult`/`Space`/`group_site_change` + span
+  helpers. Extend here: add a LiP ProK-site builder, register new stoichiometry methods. New scoring
+  methods go in `methods.py`.
 - **`utils.py` is minimal** (`amino_acids` set) — shared constants only.
 - **`protgen/` holds the core simulation logic** — `protein.py` (`Protein`: trypsin digestion +
   serine-modification occupancy), `generator.py` (`ProteinGenerator`), `peptide.py` (`Peptide`),

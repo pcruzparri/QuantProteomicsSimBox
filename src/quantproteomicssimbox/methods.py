@@ -61,3 +61,12 @@ QUANT_METHODS: dict[str, QuantMethod] = {
     "stoich_pep_mean": stoichiometry_method("peptide_mean", name="stoich_pep_mean"),
     "stoich_pep_median": stoichiometry_method("peptide_median", name="stoich_pep_median"),
 }
+
+
+def paper_ptm_methods() -> dict[str, QuantMethod]:
+    """The paper's 9 PTM intensity methods: every (scaling × aggregation) pair, in log2 space."""
+    return {
+        f"{scaling}/{aggregation}": intensity_method(scaling, aggregation, "log2", name=f"{scaling}/{aggregation}")
+        for scaling in ("rollup", "rrollup", "zrollup")
+        for aggregation in ("mean", "median", "sum")
+    }

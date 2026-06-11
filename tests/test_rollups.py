@@ -22,6 +22,8 @@ from quantproteomicssimbox.rollups import (
     roll_up,
     roll_up_stoichiometry,
     scale_rollup,
+    scale_rrollup,
+    scale_zrollup,
 )
 from quantproteomicssimbox.utils import logit2
 
@@ -146,10 +148,26 @@ def test_roll_up_rejects_unknown_methods():
         roll_up(_two_sample_dataset(), space="bogus")
 
 
-@pytest.mark.parametrize("scaling", ["rrollup", "zrollup"])
-def test_roll_up_advanced_scalings_are_stubbed(scaling):
-    with pytest.raises(NotImplementedError):
-        roll_up(_two_sample_dataset(), scaling=scaling)
+def test_scale_rrollup_re_references_to_most_observed():
+    # Row 0 is the reference (most observed); row 1 is shifted by median(ref - row1) over shared
+    # samples = median([3-1, 5-3]) = 2, bringing it onto the reference's level. NaN passes through.
+    m = np.array([[3.0, 4.0, 5.0], [1.0, np.nan, 3.0]])
+    np.testing.assert_array_equal(scale_rrollup(m), np.array([[3.0, 4.0, 5.0], [3.0, np.nan, 5.0]]))
+
+
+def test_scale_zrollup_standardizes_each_peptide():
+    m = np.array([[3.0, 4.0, 5.0], [1.0, np.nan, 3.0]])
+    z = scale_zrollup(m)
+    np.testing.assert_allclose(z[0], [-1.0, 0.0, 1.0])  # mean 4, sd 1
+    np.testing.assert_allclose(z[1][[0, 2]], [-1 / np.sqrt(2), 1 / np.sqrt(2)])  # mean 2, sd sqrt(2)
+    assert np.isnan(z[1][1])
+
+
+@pytest.mark.parametrize("scaling", ["rollup", "rrollup", "zrollup"])
+def test_roll_up_runs_for_every_scaling(scaling):
+    res = roll_up(_two_sample_dataset(), scaling=scaling, aggregation="mean")
+    assert isinstance(res, RollupResult)
+    assert res.sites == [0, 5]
 
 
 # --------------------------------------------------------------------------- #

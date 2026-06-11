@@ -115,6 +115,25 @@ def test_missingness_drops_observations_and_keeps_score_finite():
     assert np.isfinite(missing.score(intensity_method("rollup", "mean", "log2")))
 
 
+@pytest.mark.parametrize("scaling", ["rollup", "rrollup", "zrollup"])
+def test_every_scaling_scores_finite(scaling):
+    exp = _experiment(var_subject=1.0, var_site=1.0)
+    assert np.isfinite(exp.score(intensity_method(scaling, "median", "log2")))
+
+
+def test_zrollup_is_worst_scaling():
+    # The paper's finding: z-scoring each peptide destroys the log2 scale, so zrollup has the highest
+    # RMSE. Average a few seeds for a stable comparison against the no-scaling rollup.
+    def mean_rmse(scaling):
+        return np.mean([
+            _experiment(var_subject=1.0, var_site=1.0, rng=np.random.default_rng(s))
+            .score(intensity_method(scaling, "median", "log2"))
+            for s in range(4)
+        ])
+
+    assert mean_rmse("zrollup") > mean_rmse("rollup")
+
+
 def test_run_is_reproducible_under_seed():
     method = intensity_method("rollup", "median", "log2")
     a = _experiment(var_subject=1.0, var_site=1.0, rng=np.random.default_rng(42))

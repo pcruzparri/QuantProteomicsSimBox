@@ -5,7 +5,7 @@
   2. feature AGGREGATION — ``mean`` | ``median`` | ``sum``  (over the peptides mapping to a site)
 
 `build_site_tables` builds per-site peptide x sample matrices from observed `Sample`s; `roll_up`
-applies a (scaling, aggregation) pair in linear or log2 space. ``rrollup``/``zrollup`` are stubbed.
+applies a (scaling, aggregation) pair in linear or log2 space. All three scalings are implemented.
 """
 
 import warnings
@@ -42,17 +42,41 @@ def scale_rollup(matrix: np.ndarray) -> np.ndarray:
 
 
 def scale_rrollup(matrix: np.ndarray) -> np.ndarray:
-    """``rrollup``: scale each peptide to the most-frequently-observed peptide (the reference) by
-    the median log-ratio across samples before aggregation. Not implemented yet.
+    """``rrollup`` (pmartR): re-reference every peptide to the most-frequently-observed peptide.
+
+    The reference is the row (peptide) with the fewest missing samples. Each peptide is shifted by the
+    **median, across samples, of `(reference - peptide)`** — its median log-ratio to the reference in
+    log2 space — bringing all peptides onto the reference's level before aggregation. NaN (missing)
+    entries are ignored in the medians and pass through; a peptide sharing no observed sample with the
+    reference is left unshifted. Intended for the log2-space roll-up.
     """
-    raise NotImplementedError("rrollup scaling not yet implemented")
+    if matrix.shape[0] <= 1:
+        return matrix  # 0/1 peptides -> nothing to re-reference
+    observed = ~np.isnan(matrix)
+    reference = matrix[int(np.argmax(observed.sum(axis=1)))]  # most-observed peptide
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", "All-NaN slice", RuntimeWarning)
+        offsets = np.nanmedian(reference - matrix, axis=1)  # per-peptide median log-ratio to reference
+    offsets = np.nan_to_num(offsets, nan=0.0)  # no shared sample with reference -> no shift
+    return matrix + offsets[:, None]
 
 
 def scale_zrollup(matrix: np.ndarray) -> np.ndarray:
-    """``zrollup``: standardize each peptide by its estimated standard error across samples
-    (z-score) before aggregation. Not implemented yet.
+    """``zrollup`` (pmartR): standardize each peptide to a z-score across samples before aggregation.
+
+    For each peptide (row) ``z = (x - mean) / sd`` with mean/sd over its observed samples (ddof=1).
+    This strips each peptide's level *and* scale, so the aggregated value is in pooled-sd units rather
+    than log2 abundance — which is why `zrollup` is the paper's worst scaling (the magnitude no longer
+    matches the occupancy log2FC). Peptides with <2 observations (sd undefined) become NaN and are
+    skipped by the nan-aware aggregation.
     """
-    raise NotImplementedError("zrollup scaling not yet implemented")
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", "(Degrees of freedom|invalid value|Mean of empty slice)", RuntimeWarning
+        )
+        mean = np.nanmean(matrix, axis=1, keepdims=True)
+        sd = np.nanstd(matrix, axis=1, ddof=1, keepdims=True)
+        return (matrix - mean) / sd
 
 
 SCALINGS: dict[str, ScalingFunc] = {
