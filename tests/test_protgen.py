@@ -16,8 +16,9 @@ from quantproteomicssimbox.protgen import (
     ProteinGenerator,
     make_group_proteins,
     true_site_log2_fold_change,
+    true_site_stoichiometry_change,
 )
-from quantproteomicssimbox.utils import amino_acids
+from quantproteomicssimbox.utils import amino_acids, logit2
 
 
 def peptide_summary(protein):
@@ -56,6 +57,33 @@ def test_generate_protein_wraps_sequence(rng):
     protein = gen.generate_protein(50)
     assert isinstance(protein, Protein)
     assert len(protein.sequence) == 50
+
+
+def test_generate_sequence_repeat_units_creates_repeated_peptide():
+    gen = ProteinGenerator(rng=np.random.default_rng(0))
+    seq = gen.generate_sequence(80, repeat_units=3, unit_length=7)
+    assert len(seq) == 80
+    p = Protein(seq, rng=np.random.default_rng(0))
+    p.set_quantification(1, miscleavage_rate=0.0)  # perfect digest, single copy
+    counts: dict[str, int] = {}
+    for pep in p.peptides:
+        counts[pep.sequence] = counts.get(pep.sequence, 0) + 1
+    repeated = [s for s, c in counts.items() if c == 3]  # the unit digests at all 3 loci
+    assert repeated, "the forced unit should appear as the same peptide at every repeat locus"
+    assert all(u.endswith("K") and "S" in u for u in repeated)  # clean tryptic peptide w/ a serine
+
+
+def test_generate_sequence_repeat_units_must_fit():
+    gen = ProteinGenerator(rng=np.random.default_rng(0))
+    with pytest.raises(ValueError):
+        gen.generate_sequence(20, repeat_units=3, unit_length=8)  # 24 unit residues > 20
+
+
+def test_generate_sequence_zero_repeats_is_plain_random():
+    gen = ProteinGenerator(rng=np.random.default_rng(0))
+    seq = gen.generate_sequence(50)
+    assert len(seq) == 50
+    assert set(seq) <= set(AMINO_ACIDS)
 
 
 def test_end_to_end_reproducible_with_same_seed():
@@ -211,6 +239,65 @@ def test_terminal_residue_does_not_emit_runtime_warning(recwarn):
 
 
 # --------------------------------------------------------------------------- #
+# Miscleavage model fork: "global" (fixed count) vs "bernoulli" (per-site probability)
+# --------------------------------------------------------------------------- #
+# A sequence with well-separated, all-missable cut sites (none terminal, all flanks >= 2): the K
+# after each "AAK" block, ending in "AA". Lets realized fractions track the rate exactly.
+ALL_MISSABLE_SEQ = "AAK" * 8 + "AA"  # 8 cut sites, all missable
+
+
+def test_unknown_miscleavage_model_raises(rng):
+    p = Protein("AKAR", rng=rng)
+    with pytest.raises(ValueError, match="unknown miscleavage_model"):
+        p.set_quantification(5, miscleavage_model="poisson")
+
+
+def test_global_digestion_map_is_fixed_length(rng):
+    # round(rate * n_sites) cuts missed per copy -> every copy keeps the same number of cuts.
+    p = Protein(ALL_MISSABLE_SEQ, rng=rng)
+    p.set_quantification(200, miscleavage_rate=0.5, miscleavage_model="global")
+    assert len({len(copy) for copy in p.digestion_map}) == 1
+
+
+def test_bernoulli_digestion_map_is_variable_length(rng):
+    # Binomial missed count per copy -> copies generally keep different numbers of cuts.
+    p = Protein(ALL_MISSABLE_SEQ, rng=rng)
+    p.set_quantification(200, miscleavage_rate=0.5, miscleavage_model="bernoulli")
+    assert len({len(copy) for copy in p.digestion_map}) > 1
+
+
+def test_bernoulli_rate_zero_is_perfect_digest(rng):
+    p = Protein("AKAKAKAKAR", rng=rng)
+    p.set_quantification(20, miscleavage_rate=0.0, miscleavage_model="bernoulli")
+    assert all(copy == p.digestion_sites for copy in p.digestion_map)
+
+
+def test_bernoulli_rate_one_misses_all_missable_sites(rng):
+    p = Protein("AKAKAKAKAR", rng=rng)
+    p.set_quantification(20, miscleavage_rate=1.0, miscleavage_model="bernoulli")
+    # Terminal-residue cuts are never missable, so at most one site (the C-terminal cut) survives.
+    assert all(len(copy) <= 1 for copy in p.digestion_map)
+
+
+def test_bernoulli_realized_fraction_tracks_rate():
+    for rate in (0.0, 0.25, 0.5):
+        p = Protein(ALL_MISSABLE_SEQ, rng=np.random.default_rng(123))
+        p.set_quantification(2000, miscleavage_rate=rate, miscleavage_model="bernoulli")
+        n = len(p.digestion_sites)
+        frac = np.mean([1 - len(c) / n for c in p.digestion_map])
+        assert abs(frac - rate) < 0.03
+
+
+def test_bernoulli_is_reproducible_with_same_seed():
+    def run():
+        p = Protein(ALL_MISSABLE_SEQ, rng=np.random.default_rng(9))
+        p.set_quantification(100, miscleavage_rate=0.4, miscleavage_model="bernoulli")
+        return p.digestion_map
+
+    assert run() == run()
+
+
+# --------------------------------------------------------------------------- #
 # Peptide quantification (Protein.peptides)
 # --------------------------------------------------------------------------- #
 def test_peptides_exact_for_unmodified_sequence(rng):
@@ -314,3 +401,43 @@ def test_true_site_log2_fold_change_matches_occupancy_ratio():
     occ_a, occ_b = a.true_site_abundances(), b.true_site_abundances()
     for r in occ_a:
         assert fc[r] == pytest.approx(np.log2(occ_b[r] / occ_a[r]))
+
+
+# --------------------------------------------------------------------------- #
+# Stoichiometry truth (s_r = m_r / M)
+# --------------------------------------------------------------------------- #
+def test_true_site_stoichiometry_is_m_over_M(rng):
+    p = Protein("SKSAS", rng=rng)
+    p.set_quantification(100)
+    s = p.true_site_stoichiometry()
+    occ = p.true_site_abundances()
+    assert set(s) == set(p.serine_map)
+    for r in p.serine_map:
+        assert s[r] == pytest.approx(occ[r] / 100)
+        assert 0 < s[r] <= 1
+
+
+def test_true_site_stoichiometry_change_fraction_coincides_with_count_fc():
+    # Shared total abundance M -> log2(s_b/s_a) collapses to the raw-count FC log2(m_b/m_a).
+    sequence = ProteinGenerator(rng=np.random.default_rng(2)).generate_sequence(120)
+    a, b = make_group_proteins(sequence, 2, 200, rng=np.random.default_rng(3))
+    frac_change = true_site_stoichiometry_change(a, b, "fraction")
+    count_fc = true_site_log2_fold_change(a, b)
+    for r in frac_change:
+        assert frac_change[r] == pytest.approx(count_fc[r])
+
+
+def test_true_site_stoichiometry_change_logit_matches_logit_difference():
+    sequence = ProteinGenerator(rng=np.random.default_rng(2)).generate_sequence(120)
+    a, b = make_group_proteins(sequence, 2, 200, rng=np.random.default_rng(3))
+    logit_change = true_site_stoichiometry_change(a, b, "logit")
+    s_a, s_b = a.true_site_stoichiometry(), b.true_site_stoichiometry()
+    for r in logit_change:
+        assert logit_change[r] == pytest.approx(logit2(s_b[r]) - logit2(s_a[r]))
+
+
+def test_true_site_stoichiometry_change_rejects_unknown_space():
+    sequence = ProteinGenerator(rng=np.random.default_rng(2)).generate_sequence(60)
+    a, b = make_group_proteins(sequence, 2, 100, rng=np.random.default_rng(3))
+    with pytest.raises(ValueError, match="unknown stoichiometry space"):
+        true_site_stoichiometry_change(a, b, "odds")

@@ -116,3 +116,73 @@ def test_run_is_reproducible_under_seed():
     a = _experiment(var_subject=1.0, var_site=1.0, rng=np.random.default_rng(42))
     b = _experiment(var_subject=1.0, var_site=1.0, rng=np.random.default_rng(42))
     assert a.score("rollup", "median") == pytest.approx(b.score("rollup", "median"))
+
+
+# --------------------------------------------------------------------------- #
+# Stoichiometry scoring
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("method", ["fraction", "logit"])
+def test_score_stoichiometry_zero_variance_recovers_truth(method):
+    # var=0 + position-aware: each copy contributes exactly one spanning peptide per site, so observed
+    # mod/total == m_r/M == true stoichiometry -> estimated change == true change, RMSE 0.
+    exp = _experiment(var_subject=0.0, var_site=0.0, position_aware=True)
+    assert exp.score_stoichiometry(method, min_per_group=0) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_score_stoichiometry_fraction_cancels_subject_effect():
+    # The subject effect scales all of a sample's peptides equally -> cancels in the mod/total ratio.
+    # Only the per-site effect (numerator-only) biases the fraction, so large subject variance alone
+    # still recovers the truth exactly.
+    exp = _experiment(var_subject=9.0, var_site=0.0, position_aware=True)
+    assert exp.score_stoichiometry("fraction", min_per_group=0) == pytest.approx(0.0, abs=1e-9)
+
+
+@pytest.mark.parametrize("method", ["fraction", "logit"])
+def test_score_stoichiometry_positive_with_site_variance(method):
+    # The per-site effect does not cancel (it multiplies only the modified peptides), so RMSE > 0.
+    exp = _experiment(var_subject=1.0, var_site=1.0, position_aware=True)
+    rmse = exp.score_stoichiometry(method)
+    assert np.isfinite(rmse)
+    assert rmse > 0.0
+
+
+@pytest.mark.parametrize("method", ["peptide_mean", "peptide_median"])
+def test_score_peptide_stoichiometry_recovers_truth_without_miscleavage(method):
+    # No miscleavage -> exactly one span per site, so the per-peptide aggregation reduces to the
+    # pooled ratio and recovers the truth exactly at var=0.
+    exp = _experiment(miscleavage_rate=0.0, var_subject=0.0, var_site=0.0, position_aware=True)
+    assert exp.score_stoichiometry(method, min_per_group=0) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_peptide_methods_score_finite_under_miscleavage_and_missingness():
+    # With fragmentation + missingness the per-peptide methods are valid (finite) estimators; this is
+    # the regime where they can differ from pooled (studied in the notebook).
+    exp = _experiment(var_subject=1.0, var_site=1.0, missingness=0.3, position_aware=True)
+    for method in ("peptide_mean", "peptide_median", "peptide_mean_logit"):
+        assert np.isfinite(exp.score_stoichiometry(method))
+
+
+# --------------------------------------------------------------------------- #
+# Per-species ionization efficiency (var_species)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("method", ["fraction", "peptide_mean"])
+def test_var_species_preserves_exact_recovery_without_miscleavage(method):
+    # gamma is shared by a span's modified & unmodified forms, so it cancels in the fraction. With one
+    # span per site (no miscleavage), even large species variance recovers the truth exactly.
+    exp = _experiment(miscleavage_rate=0.0, var_subject=0.0, var_site=0.0, var_species=9.0,
+                      position_aware=True)
+    assert exp.score_stoichiometry(method, min_per_group=0) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_var_species_biases_pooled_but_not_per_peptide_under_fragmentation():
+    # Multiple spans per site: the abundance-weighted pooled ratio is distorted by per-species
+    # efficiency, while the per-peptide fraction cancels it. Same seed -> same ground truth & digestion,
+    # so the only difference is the observation's species term.
+    kw = dict(miscleavage_rate=0.5, var_subject=0.0, var_site=0.0, position_aware=True)
+    pooled_plain = _experiment(var_species=0.0, **kw).score_stoichiometry("fraction", min_per_group=0)
+    pooled_eff = _experiment(var_species=9.0, **kw).score_stoichiometry("fraction", min_per_group=0)
+    pep_plain = _experiment(var_species=0.0, **kw).score_stoichiometry("peptide_mean", min_per_group=0)
+    pep_eff = _experiment(var_species=9.0, **kw).score_stoichiometry("peptide_mean", min_per_group=0)
+    assert pooled_plain == pytest.approx(0.0, abs=1e-9)  # no efficiency weighting -> exact
+    assert pooled_eff > 0.1  # efficiency biases the pooled ratio
+    assert pep_eff == pytest.approx(pep_plain)  # per-peptide fraction is invariant to efficiency

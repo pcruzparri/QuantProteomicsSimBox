@@ -65,27 +65,37 @@ class ObservationModel:
 
     Implements the paper's observation model (Eqs. 2-5): a per-subject effect
     beta_ik ~ N(0, var_subject) and a per-site effect alpha_r ~ N(0, var_site), combined as a
-    2 ** (beta_ik + sum_{r in S} alpha_r) factor on each peptide's abundance. var_subject/var_site
-    are the Normal *variances* (the paper's swept "variance levels"), so the std-dev passed to the
-    draw is their square root. Draws are cached so each subject and each site is sampled once and
-    reused. Missingness is not yet implemented.
+    2 ** (beta_ik + sum_{r in S} alpha_r) factor on each peptide's abundance. An optional extension
+    adds a per-peptide-species (backbone) ionization efficiency gamma_p ~ N(0, var_species), a fixed
+    factor shared by all mod-forms of a sequence — it cancels inside a span's modified fraction but
+    drives between-span abundance differences (so it is what the per-peptide stoichiometry aggregations
+    target, and what abundance-dependent missingness keys on). var_* are the Normal *variances* (the
+    paper's swept "variance levels"), so the std-dev passed to the draw is their square root. Draws are
+    cached so each subject, site and species is sampled once and reused.
     """
 
     def __init__(
         self,
         var_subject: float = 0.0,
         var_site: float = 0.0,
+        var_species: float = 0.0,
         position_aware: bool = False,
         rng: np.random.Generator | None = None,
     ) -> None:
         self.var_subject = var_subject  # beta_ik ~ N(0, var_subject): per-subject variance (Eq. 4)
         self.var_site = var_site  # alpha_r ~ N(0, var_site): per-site variance (Eq. 5)
+        # gamma_p ~ N(0, var_species): per-peptide-species (backbone) log2 ionization efficiency — a
+        # fixed physicochemical factor shared by every mod-form of a sequence, so it cancels inside a
+        # span's modified fraction but not between spans (the effect per-peptide aggregation targets).
+        self.var_species = var_species
         self.position_aware = position_aware  # collapse indistinguishable peptides in a Sample?
         self.rng = rng if rng is not None else np.random.default_rng()
         # beta_ik (Eq. 4): one draw per (group, subject), reused across all that subject's peptides and proteins.
         self.subject_effects: dict[tuple[int, int], float] = {}
         # alpha_r (Eq. 5): one draw per (protein sequence, absolute site), reused across all subjects and groups.
         self.site_effects: dict[tuple[str, int], float] = {}
+        # gamma_p: one draw per peptide *sequence* (backbone), reused across subjects, groups and loci.
+        self.species_effects: dict[str, float] = {}
 
     def sample(self, protein: Protein, group: int, subject: int) -> Sample:
         """One observed Sample for (group, subject).
@@ -103,12 +113,17 @@ class ObservationModel:
 
         observed: list[Peptide] = []
         for pep in protein.peptides:
-            exponent = beta  # log2-space shift = beta_ik + sum_{r in S} alpha_r (Eq. 3)
+            exponent = beta  # log2-space shift = beta_ik + sum_{r in S} alpha_r (+ gamma_p) (Eq. 3)
             for mod_site in pep.mod_sites:
                 site_key = (protein.sequence, mod_site)  # alpha is a property of the site, not the peptide form
                 if site_key not in self.site_effects:
                     self.site_effects[site_key] = self.rng.normal(0, np.sqrt(self.var_site))  # alpha_r (Eq. 5)
                 exponent += self.site_effects[site_key]
+            if self.var_species:
+                # gamma_p: per-sequence ionization efficiency, shared by all mod-forms of this backbone.
+                if pep.sequence not in self.species_effects:
+                    self.species_effects[pep.sequence] = self.rng.normal(0, np.sqrt(self.var_species))
+                exponent += self.species_effects[pep.sequence]
             observed.append(
                 Peptide(
                     pep.sequence,

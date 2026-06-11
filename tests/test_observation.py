@@ -177,6 +177,20 @@ def test_site_effects_keyed_by_protein_not_peptide_form():
     assert {site for _seq, site in model.site_effects} == modified_sites
 
 
+def test_species_effect_keyed_by_sequence_shared_across_mod_forms():
+    # gamma_p is a per-sequence (backbone) ionization factor: one draw per distinct peptide sequence,
+    # shared by every mod-form of that backbone. With only var_species, the modified and unmodified
+    # "SK" species are scaled by the same 2^gamma, so it cancels in their within-span fraction.
+    p = Protein("SK", rng=np.random.default_rng(0))
+    p.set_quantification(100, miscleavage_rate=0.0)  # yields modified + unmodified "SK" species
+    model = ObservationModel(var_subject=0.0, var_site=0.0, var_species=1.0, rng=np.random.default_rng(1))
+    s = model.sample(p, group=0, subject=0)
+    assert set(model.species_effects) == {"SK"}  # one draw, keyed by sequence
+    truth = {tuple(t.mod_sites): t.abundance for t in p.peptides}
+    ratios = [o.abundance / truth[tuple(o.mod_sites)] for o in s.peptides]
+    assert ratios == pytest.approx([ratios[0]] * len(ratios))  # same 2^gamma for both forms
+
+
 def test_sample_does_not_mutate_protein():
     gen = ProteinGenerator(rng=np.random.default_rng(4))
     p = gen.generate_protein(60)

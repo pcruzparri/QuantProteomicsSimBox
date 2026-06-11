@@ -15,8 +15,15 @@ from .protgen import (
     ProteinGenerator,
     make_group_proteins,
     true_site_log2_fold_change,
+    true_site_stoichiometry_change,
 )
-from .rollups import RollupResult, group_log2_fold_change, roll_up
+from .rollups import (
+    STOICHIOMETRY_METHODS,
+    RollupResult,
+    group_log2_fold_change,
+    roll_up,
+    roll_up_stoichiometry,
+)
 
 
 class Experiment:
@@ -27,9 +34,13 @@ class Experiment:
         n_groups: int = 2,
         n_subjects: int = 25,
         abundance: int = 250,
+        repeat_units: int = 0,
+        repeat_unit_length: int = 8,
         miscleavage_rate: float = 0.0,
+        miscleavage_model: str = "global",
         var_subject: float = 0.0,
         var_site: float = 0.0,
+        var_species: float = 0.0,
         missingness: float = 0.0,
         position_aware: bool = False,
         rng: np.random.Generator | None = None,
@@ -39,13 +50,17 @@ class Experiment:
         self.n_groups = n_groups
         self.n_subjects = n_subjects
         self.abundance = abundance
+        self.repeat_units = repeat_units  # identical repeated peptides per protein (0 = none)
+        self.repeat_unit_length = repeat_unit_length
         self.miscleavage_rate = miscleavage_rate
+        self.miscleavage_model = miscleavage_model  # digest fork: "global" | "bernoulli"
         self.missingness = missingness  # global induced-missingness rate (abundance-dependent)
         self.rng = rng if rng is not None else np.random.default_rng()
         # One model across all proteins: beta per (group, subject) shared; alpha per (sequence, site).
         self.model = ObservationModel(
             var_subject=var_subject,
             var_site=var_site,
+            var_species=var_species,
             position_aware=position_aware,
             rng=self.rng,
         )
@@ -59,10 +74,13 @@ class Experiment:
         generator = ProteinGenerator(rng=self.rng)
         self.protein_groups = [
             make_group_proteins(
-                generator.generate_sequence(self.protein_length),
+                generator.generate_sequence(
+                    self.protein_length, self.repeat_units, self.repeat_unit_length
+                ),
                 self.n_groups,
                 self.abundance,
                 self.miscleavage_rate,
+                self.miscleavage_model,
                 self.rng,
             )
             for _ in range(self.n_proteins)
@@ -122,6 +140,45 @@ class Experiment:
                 est = estimated.get(site)
                 if est is not None and np.isfinite(est):
                     squared_errors.append((est - true_fc) ** 2)
+        if not squared_errors:
+            return float("nan")
+        return float(np.sqrt(np.mean(squared_errors)))
+
+    def roll_up_stoichiometry(self, method: str = "fraction", min_per_group: int = 1) -> list[RollupResult]:
+        """Stoichiometry roll-up per protein — per-site modified fraction (see
+        ``rollups.roll_up_stoichiometry``). `method` selects a ``STOICHIOMETRY_METHODS`` entry.
+
+        Best run with ``position_aware=True``: the spanning denominator is exact only under
+        position-aware observation; under the agnostic default it is biased (a study axis, not enforced).
+        """
+        if not self.samples:
+            self.observe()
+        return [roll_up_stoichiometry(pooled, method, min_per_group) for pooled in self.samples]
+
+    def score_stoichiometry(
+        self,
+        method: str = "fraction",
+        min_per_group: int = 1,
+        baseline_group: int = 0,
+        treatment_group: int = 1,
+    ) -> float:
+        """RMSE of estimated vs true per-site stoichiometry change across all sites of all proteins.
+
+        The ``fraction`` method estimates the log2 fold-change of the modified fraction; ``logit`` the
+        change in log-odds. Each is scored against its matching truth
+        (``true_site_stoichiometry_change``, keyed off the method's space). Best run with
+        ``position_aware=True`` (exact spanning denominator).
+        """
+        results = self.roll_up_stoichiometry(method, min_per_group)
+        space = STOICHIOMETRY_METHODS[method].space
+        squared_errors: list[float] = []
+        for groups, result in zip(self.protein_groups, results):
+            truth = true_site_stoichiometry_change(groups[baseline_group], groups[treatment_group], space)
+            estimated = group_log2_fold_change(result, baseline_group, treatment_group)
+            for site, true_change in truth.items():
+                est = estimated.get(site)
+                if est is not None and np.isfinite(est):
+                    squared_errors.append((est - true_change) ** 2)
         if not squared_errors:
             return float("nan")
         return float(np.sqrt(np.mean(squared_errors)))

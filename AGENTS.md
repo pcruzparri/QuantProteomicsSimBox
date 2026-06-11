@@ -36,7 +36,9 @@ injected truth.
 3. **Digestion**: inject `#` into modified copies, then **trypsin** digest (cleave after K/R unless
    followed by P). Simulate **imperfect digestion** via a second pass that merges adjacent peptides;
    missed-cleavage sites are sampled with probability **proportional to adjacent peptide length**
-   (shorter peptides merge more readily). Reference uses `OrgMassSpecR` for the perfect digest.
+   (shorter peptides merge more readily). Reference uses `OrgMassSpecR` for the perfect digest. The
+   simulator offers two `miscleavage_model`s for this (see the `digest()` mapping below): the paper's
+   fixed-proportion `"global"` model and an independent-probability `"bernoulli"` model.
 4. **Observation model**: the modified-peptide abundance carries a **site effect** (how a PTM at a
    position shifts the peptide's m/z-derived intensity) and a **subject effect**:
    `abundance_{i,k,S} = p_S · 2^{β_k + Σ_{r∈S} α_r}`, i.e.
@@ -90,20 +92,30 @@ injected truth.
   modifications), `serine_map`, `digestion_sites`, `digestion_map` (per-copy kept cut positions),
   and `peptides: list[Peptide]` (the digestion output). Takes an optional `rng: np.random.Generator`
   for reproducible simulations (defaults to `np.random.default_rng()`).
-- `Protein.set_quantification(abundance, miscleavage_rate=0.0)` — assigns serine mods using the
-  paper's per-site occupancy model (Eq. 1): for each serine draw `m_r ~ U(1, M)` and modify that
-  many randomly chosen copies; then digests at the given rate.
-- `Protein.digest(miscleavage_rate=0.0)` — trypsin sites (K/R not before P). `miscleavage_rate` is
-  the **realized proportion of missed cleavages**: per proteoform copy it samples
-  `round(rate · n_sites)` sites to miss, **without replacement, weighted by `1/min(flanking peptide
-  lengths)`** so shorter flanking peptides are merged more often (paper's model). Terminal-residue
-  cuts (zero-length flank) are excluded as no-ops. Then it splits each copy into peptide spans and
-  aggregates identical species (same `start`/`end`/`mod_sites`) into `Peptide` objects whose
-  `abundance` counts the copies that produced them. **Requires `mod_table`** (the guard raises `ValueError` otherwise), so
-  call via `set_quantification`, not `digest()` directly. There is no `get_peptides()` method.
-- `ProteinGenerator(rng=...)` — `generate_sequence(length) -> str` and
-  `generate_protein(length) -> Protein`; samples over the shared `AMINO_ACIDS` alphabet (a sorted
-  tuple derived from `utils.amino_acids`).
+- `Protein.set_quantification(abundance, miscleavage_rate=0.0, miscleavage_model="global")` — assigns
+  serine mods using the paper's per-site occupancy model (Eq. 1): for each serine draw `m_r ~ U(1, M)`
+  and modify that many randomly chosen copies; then digests at the given rate and model.
+- `Protein.digest(miscleavage_rate=0.0, miscleavage_model="global")` — trypsin sites (K/R not before
+  P). The **miscleavage-model fork** (`protgen.MISCLEAVAGE_MODELS`) chooses how missed cleavages are
+  drawn per proteoform copy:
+  - `"global"` (default, the paper's model) — `miscleavage_rate` is the **realized proportion**: each
+    copy misses exactly `round(rate · n_sites)` sites, sampled **without replacement, weighted by
+    `1/min(flanking peptide lengths)`** so shorter flanks merge more. The missed *count* is identical
+    across copies → **fixed-length `digestion_map`**; copies differ only in *which* cuts are missed
+    (`_digest_global`).
+  - `"bernoulli"` — each cut is missed **independently with probability `rate`**, so the per-copy
+    missed count is `Binomial(n_missable, rate)` → **variable-length `digestion_map`** (`_digest_bernoulli`).
+  Terminal-residue cuts (zero-length flank) are never missable in either model. Then it splits each
+  copy into peptide spans and aggregates identical species (same `start`/`end`/`mod_sites`) into
+  `Peptide` objects whose `abundance` counts the copies that produced them. **Requires `mod_table`**
+  (the guard raises `ValueError` otherwise), so call via `set_quantification`, not `digest()` directly.
+  There is no `get_peptides()` method.
+- `ProteinGenerator(rng=...)` — `generate_sequence(length, repeat_units=0, unit_length=8) -> str` and
+  `generate_protein(...) -> Protein`; samples over the shared `AMINO_ACIDS` alphabet (a sorted tuple
+  derived from `utils.amino_acids`). With `repeat_units > 0` it embeds that many copies of one shared
+  clean tryptic peptide (a `unit`: no internal K/R, contains a serine, ends in K) so it digests as the
+  **same peptide species at distinct loci** — forces the bottom-up position ambiguity (identical
+  sequences that position-agnostic grouping merges). Threaded through `Experiment(repeat_units, …)`.
 
 **Architecture — ground truth vs. observation are separate layers.** `Protein` is the *ground-truth*
 generator: position-aware, exact, treated as immutable after `set_quantification`. `observation.py`
@@ -116,9 +128,13 @@ is the *observation* layer that derives noisy observed data from that truth with
   `position_aware=True` it also keys on start position (no cross-locus merge). Agnostic (default)
   mirrors that bottom-up MS cannot distinguish identical sequences at different loci; merged species
   keep the first occurrence's position fields. Returns new `Peptide`s (inputs untouched).
-- `ObservationModel(var_subject, var_site, position_aware, rng)` — applies the observation model
-  (Eqs. 2–5): `sample()`/`sample_group()` apply per-subject `beta_ik` and per-site `alpha_r` Normal
-  effects (`var_*` are variances). `apply_missingness(samples, rate)` drops
+- `ObservationModel(var_subject, var_site, var_species, position_aware, rng)` — applies the observation
+  model (Eqs. 2–5): `sample()`/`sample_group()` apply per-subject `beta_ik` and per-site `alpha_r`
+  Normal effects (`var_*` are variances). **`var_species` (extension)** adds a per-peptide-species
+  (backbone) log2 ionization efficiency `gamma_p` keyed on the peptide *sequence* — shared by a span's
+  mod & unmod forms, so it **cancels inside a span's modified fraction** (per-peptide stoichiometry is
+  invariant to it) but drives between-span abundance differences that bias the pooled ratio and that
+  abundance-dependent missingness keys on. Threaded through `Experiment(var_species, …)`. `apply_missingness(samples, rate)` drops
   `round(rate · n_obs)` observations, **abundance-dependent** (prob ∝ 1/abundance, MNAR; Bramer
   et al. label-free variant) — the TMT-plex (block) variant is the remaining refinement.
 
@@ -130,10 +146,40 @@ occupancy), not the noise model:
   stays per `(group, subject)`.
 - `Protein.true_site_abundances()` + `true_site_log2_fold_change(a, b)` (protgen.py) — known per-site
   truth: occupancy `mod_table[:, r].sum()`, and `log2(occ_b/occ_a)`.
-- `group_log2_fold_change(result, group_a, group_b)` (rollups.py) — estimated per-site FC from a
-  `RollupResult`, branching on `result.space`: log2-space values → `mean_b - mean_a`; linear → 
-  `log2(mean_b/mean_a)`. The paper's *modified-peptide-intensity* FC; the stoichiometry/logit-FC
-  variant is the planned sibling — see the [[optrollingup-reference-design]] and stoichiometry memos.
+- `group_log2_fold_change(result, group_a, group_b)` (rollups.py) — estimated per-site change from a
+  `RollupResult`, branching on `result.space`: log-space values (`log2`/`logit`) → `mean_b - mean_a`;
+  ratio-space (`linear`/`fraction`) → `log2(mean_b/mean_a)`. Covers both the paper's
+  *modified-peptide-intensity* FC and the stoichiometry roll-up below.
+
+**Stoichiometry roll-up (rollups.py / protgen.py / experiment.py).** A second quantification approach:
+per-site **modified fraction** `s = (abundance modified at the site) / (abundance of all peptides
+spanning the site, mod + unmod)`, a ratio of two sums (not a scale-then-aggregate over a peptide
+matrix), then a selectable transform.
+- Two builders (per serine, read off `Sample.protein_sequence`; a peptide contributes to a site for
+  every serine in its span `[start,end]`, and to the numerator when `r ∈ mod_sites`):
+  `build_stoichiometry_tables` sums **pooled** `mod`/`total` spanning abundance over samples;
+  `build_peptide_fraction_tables` keeps a fraction **per peptide span** `(start,end)` covering the site
+  (a `PeptideFractionSite.fractions` matrix `[spans × samples]`). Unobserved = NaN; spanned-but-unmodified = 0.
+- `STOICHIOMETRY_METHODS` registry (extensible, like `SCALINGS`) — each entry is an `aggregation` ×
+  `transform`. **aggregation**: `pooled` (sum mod / sum total), `pooled_pseudocount` (Haldane
+  `(mod+0.5)/(total+1)`), or per-span `peptide_mean` / `peptide_median` (mean/median of per-span
+  fractions — abundance-cancelling). **transform** (`FRACTION_TRANSFORMS`): `fraction` (bare, space
+  `"fraction"`) or `logit` (`logit2`, space `"logit"`). Shipped names: `fraction`, `logit`,
+  `logit_pseudocount`, `peptide_mean`, `peptide_median`, `peptide_mean_logit`, `peptide_median_logit`.
+  `roll_up_stoichiometry(samples, method, min_per_group)` applies one → a `RollupResult` whose `space`
+  drives `group_log2_fold_change`. Per-span fractions are unbiased for `s`, so `peptide_*` are scored
+  against the same truth as `pooled`; with miscleavage they fragment a site into several spans, so
+  `peptide_*` recover truth exactly only at miscleavage 0 (single span).
+- **Truth** `Protein.true_site_stoichiometry()` = `m_r/M` and `true_site_stoichiometry_change(a, b,
+  space)` (protgen.py): `fraction` → `log2(s_b/s_a)`, `logit` → `logit2(s_b)−logit2(s_a)`. The
+  fraction change equals the count FC `log2(m_b/m_a)` **only because both groups share `M`** (noted in
+  code). `Experiment.roll_up_stoichiometry` / `score_stoichiometry(method)` score each method against
+  its matching truth.
+- **Position-aware requirement**: the spanning denominator is exact only under `position_aware=True`
+  observation; the agnostic merge biases it (a deliberate study axis — see backlog). With `var=0` +
+  position-aware, `mod/total == m_r/M` exactly (RMSE 0). The subject effect `beta` **cancels** in the
+  fraction (it scales numerator and denominator equally); only the per-site `alpha` (numerator-only)
+  biases it. `logit2`/`STOICH_EPS` live in `utils.py`.
 - **Aggregation `space` (`"linear"` | `"log2"`, default `"log2"`).** `roll_up`/`Experiment` take a
   `space`. The paper/pmartR aggregate **log2** abundances (`edata_transform(., "log2")` first), which
   flips which aggregator is unbiased vs the occupancy truth:
@@ -150,7 +196,7 @@ occupancy), not the noise model:
   (mean/median barely move). mean/median magnitudes ≈ the paper's ~1; **sum is still ~2× the paper's
   ~3**, a residual from our peptide-species granularity (more span/mod variants per site than the
   reference) — a finer modeling detail, see backlog.
-- `experiment.py` `Experiment(n_proteins, …, var_subject, var_site, missingness, rng)` — multi-protein
+- `experiment.py` `Experiment(n_proteins, …, repeat_units, miscleavage_rate, miscleavage_model, var_subject, var_site, var_species, missingness, position_aware, rng)` — multi-protein
   study facade: `build()` (per-group proteins) → `observe()` (one **shared** `ObservationModel`, so
   `beta` is shared across proteins, `alpha` per protein; applies `missingness` per protein) →
   `roll_up()` (one `RollupResult` per protein) → `score(scaling, aggregation, space, min_per_group)`
@@ -164,16 +210,50 @@ fully match); the **TMT-plex (block) missingness** variant (label-free MNAR is d
 scaling, mean/median/sum aggregations, the linear/log2 `space`, the `min_per_group` presence filter,
 the PTM site-table builder, `roll_up`, `group_log2_fold_change`, `apply_missingness`, and the
 `Experiment` scorer are implemented); mean RMSE ± std error across replicate `Experiment`s and the
-full >600-combo sweep; the entire **LiP-MS** pipeline (masking, ProK digest, two-stage digestion);
-and the planned **stoichiometry / logit-FC** analysis to compare against the paper's intensity FC.
+full >600-combo sweep; and the entire **LiP-MS** pipeline (masking, ProK digest, two-stage digestion).
+The **stoichiometry / logit-FC** analysis is now implemented (see the Stoichiometry roll-up section
+above); its remaining exploration directions are in the backlog below.
+
+**Stoichiometry exploration backlog** (research directions to build toward, now that the base
+stoichiometry roll-up has landed — per-site fraction = mod abundance / total spanning abundance, with
+`fraction` / `logit` transforms):
+- **Position-aware vs position-agnostic denominator** — the spanning-abundance denominator is only
+  exact under **position-aware** grouping; the agnostic cross-loci merge (`aggregate_peptides`,
+  `position_aware=False`) collapses same-sequence peptides and distorts which peptides count toward a
+  site. This divergence is **an effect to study in its own right** (how agnostic grouping biases the
+  modified fraction), not merely a correctness caveat — so keep both observation modes runnable
+  through the stoichiometry path.
+- **Per-peptide-span fraction aggregation** — *implemented* (`peptide_mean` / `peptide_median` and
+  their `_logit` variants, via `build_peptide_fraction_tables`). The motivating abundance effect is
+  also implemented (`ObservationModel.var_species`, per-species ionization efficiency). Finding from
+  the notebook sweeps + tests: per-peptide fractions are **provably invariant** to `var_species` (it
+  cancels in each span's ratio), while the pooled ratio degrades with it — so per-peptide **wins once
+  the per-species abundance effect is large** (crossover ≈ `var_species` 7 at 50% miscleavage). Open
+  direction: characterize the win region across miscleavage × missingness × `var_species`, and decide
+  whether a mod-vs-unmod efficiency difference (within-span, which per-peptide does *not* cancel)
+  belongs in the model.
+
+**Structural refactor backlog** (deferred reorganizations — code works, these are hygiene/leverage):
+- **Unified `QuantMethod` registry** *(highest leverage)* — `Experiment.score` and `score_stoichiometry`
+  share a byte-identical RMSE loop, differing only in roll-up + truth fn. Bundle each named method's
+  `roll_up(samples) -> RollupResult` **and** its matching `true_change(a, b)` into one strategy, so a
+  single `score(method)` covers intensity / pooled-stoich / per-peptide / future LiP, and the notebook
+  iterates one registry instead of special-casing `score` vs `score_stoichiometry`.
+- **Split `rollups.py`** (411 lines) into intensity vs stoichiometry roll-up modules + a small shared
+  core (`RollupResult`, the group-change fn).
+- **Rename `group_log2_fold_change` -> `group_site_change`** and make `space` an enum (it no longer
+  always returns a log2 fold-change — it's a difference for `log2`/`logit`).
+- **DRY the three builders** (`build_site_tables`, `build_stoichiometry_tables`,
+  `build_peptide_fraction_tables`) — extract the shared samples×peptides×serine-span indexing.
 
 ## Package Overview
 
 - **Package name**: `quantproteomicssimbox`
 - **Entry point**: `src/quantproteomicssimbox/__init__.py`
 - **Core modules**: `protgen.py` (ground-truth simulation + group occupancy), `observation.py`
-  (observed-sample layer), `rollups.py` (peptide→site roll-up + group fold-change; `rrollup`/`zrollup`
-  stubbed), `experiment.py` (multi-protein study + RMSE scoring), `utils.py` (shared constants)
+  (observed-sample layer), `rollups.py` (peptide→site intensity roll-up + the stoichiometry-fraction
+  roll-up + group fold-change; `rrollup`/`zrollup` stubbed), `experiment.py` (multi-protein study +
+  RMSE scoring), `utils.py` (shared constants + the `logit2` helper)
 - **README.md is empty** — do not rely on it for context or requirements.
 - **Type hints**: `py.typed` is present, so type-checking tools should respect it.
 
