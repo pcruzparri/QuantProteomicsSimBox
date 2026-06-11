@@ -28,38 +28,6 @@ class Sample:
     peptides: list[Peptide] = field(default_factory=list)
 
 
-def aggregate_peptides(peptides: list[Peptide], position_aware: bool = False) -> list[Peptide]:
-    """Aggregate peptides into distinct species, summing abundances. Returns new Peptides.
-
-    Key = (sequence, relative-mod signature), so the same sequence + mod pattern aggregates
-    regardless of locus. position_aware=True also keys on start (ground-truth view); the
-    default merges identical species across loci (bottom-up MS can't tell them apart), keeping
-    the first occurrence's position fields.
-    """
-    aggregated: dict[tuple, Peptide] = {}
-    for pep in peptides:
-        if pep.start_index is None:
-            rel_mods = tuple(pep.mod_sites)
-        else:
-            rel_mods = tuple(s - pep.start_index for s in pep.mod_sites)
-        key: tuple = (pep.sequence, rel_mods)
-        if position_aware:
-            key = key + (pep.start_index,)
-
-        existing = aggregated.get(key)
-        if existing is None:
-            aggregated[key] = Peptide(
-                pep.sequence,
-                abundance=pep.abundance,
-                start_index=pep.start_index,
-                end_index=pep.end_index,
-                mod_sites=list(pep.mod_sites),
-            )
-        else:
-            existing.abundance += pep.abundance
-    return list(aggregated.values())
-
-
 class ObservationModel:
     """Generates observed Samples from a ground-truth Protein.
 
@@ -182,3 +150,36 @@ class ObservationModel:
             )
             for si, s in enumerate(samples)
         ]
+
+
+def aggregate_peptides(peptides: list[Peptide], position_aware: bool = False) -> list[Peptide]:
+    """Aggregate peptides into distinct species, summing abundances. Returns new Peptides.
+
+    Key = (sequence, relative-mod signature), so the same sequence + mod pattern aggregates
+    regardless of locus. position_aware=True also keys on start (ground-truth view); the
+    default merges identical species across loci (bottom-up MS can't tell them apart), keeping
+    the first occurrence's position fields. Used by ``ObservationModel.sample`` to collapse the
+    indistinguishable peptides in a Sample.
+    """
+    aggregated: dict[tuple, Peptide] = {}
+    for pep in peptides:
+        if pep.start_index is None:
+            rel_mods = tuple(pep.mod_sites)
+        else:
+            rel_mods = tuple(s - pep.start_index for s in pep.mod_sites)
+        key: tuple = (pep.sequence, rel_mods)
+        if position_aware:
+            key = key + (pep.start_index,)
+
+        existing = aggregated.get(key)
+        if existing is None:
+            aggregated[key] = Peptide(
+                pep.sequence,
+                abundance=pep.abundance,
+                start_index=pep.start_index,
+                end_index=pep.end_index,
+                mod_sites=list(pep.mod_sites),
+            )
+        else:
+            existing.abundance += pep.abundance
+    return list(aggregated.values())

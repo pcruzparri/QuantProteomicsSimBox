@@ -9,21 +9,10 @@ per-protein (keyed on sequence). One `rng` makes a run reproducible.
 
 import numpy as np
 
+from .methods import QuantMethod
 from .observation import ObservationModel, Sample
-from .protgen import (
-    Protein,
-    ProteinGenerator,
-    make_group_proteins,
-    true_site_log2_fold_change,
-    true_site_stoichiometry_change,
-)
-from .rollups import (
-    STOICHIOMETRY_METHODS,
-    RollupResult,
-    group_log2_fold_change,
-    roll_up,
-    roll_up_stoichiometry,
-)
+from .protgen import Protein, ProteinGenerator, make_group_proteins
+from .rollups import RollupResult, group_site_change
 
 
 class Experiment:
@@ -100,81 +89,38 @@ class Experiment:
             self.samples.append(pooled)
         return self.samples
 
-    def roll_up(
-        self,
-        scaling: str = "rollup",
-        aggregation: str = "median",
-        space: str = "log2",
-        min_per_group: int = 1,
-    ) -> list[RollupResult]:
-        """Roll up each protein's pooled samples to site level (one RollupResult per protein).
+    def roll_up(self, method: QuantMethod, min_per_group: int = 1) -> list[RollupResult]:
+        """Roll up each protein's pooled samples to site level with `method` (one result per protein).
 
-        `space` ("log2" | "linear") selects the aggregation space; `min_per_group` is the presence
-        filter — see ``rollups.roll_up``.
+        `method` is a `QuantMethod` (intensity or stoichiometry) — see `quantproteomicssimbox.methods`.
+        `min_per_group` is the presence filter. Best run with ``position_aware=True`` for stoichiometry
+        methods (the spanning denominator is exact only then; a study axis otherwise).
         """
         if not self.samples:
             self.observe()
-        return [roll_up(pooled, scaling, aggregation, space, min_per_group) for pooled in self.samples]
+        return [method.roll_up(pooled, min_per_group) for pooled in self.samples]
 
     def score(
         self,
-        scaling: str = "rollup",
-        aggregation: str = "median",
-        space: str = "log2",
+        method: QuantMethod,
         min_per_group: int = 1,
         baseline_group: int = 0,
         treatment_group: int = 1,
     ) -> float:
-        """RMSE of estimated vs true per-site log2FC across all sites of all proteins.
+        """RMSE of estimated vs true per-site change across all sites of all proteins, for `method`.
 
-        Defaults to log2 aggregation space (the paper's convention) with the `min_per_group`=1
-        presence filter. The matched (unbiased) aggregator is mean/median in log2 space and sum in
-        linear space.
-        """
-        results = self.roll_up(scaling, aggregation, space, min_per_group)
-        squared_errors: list[float] = []
-        for groups, result in zip(self.protein_groups, results):
-            truth = true_site_log2_fold_change(groups[baseline_group], groups[treatment_group])
-            estimated = group_log2_fold_change(result, baseline_group, treatment_group)
-            for site, true_fc in truth.items():
-                est = estimated.get(site)
-                if est is not None and np.isfinite(est):
-                    squared_errors.append((est - true_fc) ** 2)
-        if not squared_errors:
-            return float("nan")
-        return float(np.sqrt(np.mean(squared_errors)))
-
-    def roll_up_stoichiometry(self, method: str = "fraction", min_per_group: int = 1) -> list[RollupResult]:
-        """Stoichiometry roll-up per protein — per-site modified fraction (see
-        ``rollups.roll_up_stoichiometry``). `method` selects a ``STOICHIOMETRY_METHODS`` entry.
-
-        Best run with ``position_aware=True``: the spanning denominator is exact only under
-        position-aware observation; under the agnostic default it is biased (a study axis, not enforced).
+        One scoring loop for every quantification method: roll up each protein with ``method.roll_up``,
+        estimate the per-site between-group change (``group_site_change``), and compare to
+        ``method.true_change`` (the truth matched to that method). Build methods with
+        `methods.intensity_method` / `methods.stoichiometry_method` or pull one from `methods.QUANT_METHODS`.
         """
         if not self.samples:
             self.observe()
-        return [roll_up_stoichiometry(pooled, method, min_per_group) for pooled in self.samples]
-
-    def score_stoichiometry(
-        self,
-        method: str = "fraction",
-        min_per_group: int = 1,
-        baseline_group: int = 0,
-        treatment_group: int = 1,
-    ) -> float:
-        """RMSE of estimated vs true per-site stoichiometry change across all sites of all proteins.
-
-        The ``fraction`` method estimates the log2 fold-change of the modified fraction; ``logit`` the
-        change in log-odds. Each is scored against its matching truth
-        (``true_site_stoichiometry_change``, keyed off the method's space). Best run with
-        ``position_aware=True`` (exact spanning denominator).
-        """
-        results = self.roll_up_stoichiometry(method, min_per_group)
-        space = STOICHIOMETRY_METHODS[method].space
         squared_errors: list[float] = []
-        for groups, result in zip(self.protein_groups, results):
-            truth = true_site_stoichiometry_change(groups[baseline_group], groups[treatment_group], space)
-            estimated = group_log2_fold_change(result, baseline_group, treatment_group)
+        for groups, pooled in zip(self.protein_groups, self.samples):
+            result = method.roll_up(pooled, min_per_group)
+            truth = method.true_change(groups[baseline_group], groups[treatment_group])
+            estimated = group_site_change(result, baseline_group, treatment_group)
             for site, true_change in truth.items():
                 est = estimated.get(site)
                 if est is not None and np.isfinite(est):

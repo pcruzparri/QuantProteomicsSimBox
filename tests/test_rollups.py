@@ -18,7 +18,7 @@ from quantproteomicssimbox.rollups import (
     build_peptide_fraction_tables,
     build_site_tables,
     build_stoichiometry_tables,
-    group_log2_fold_change,
+    group_site_change,
     roll_up,
     roll_up_stoichiometry,
     scale_rollup,
@@ -153,16 +153,16 @@ def test_roll_up_advanced_scalings_are_stubbed(scaling):
 
 
 # --------------------------------------------------------------------------- #
-# group_log2_fold_change
+# group_site_change
 # --------------------------------------------------------------------------- #
-def test_group_log2_fold_change_linear_space_uses_ratio():
+def test_group_site_change_linear_space_uses_ratio():
     result = RollupResult(
         sites=[5, 9],
         sample_keys=[(0, 0), (0, 1), (1, 0), (1, 1)],
         values=np.array([[2.0, 2.0, 4.0, 4.0], [1.0, 1.0, 1.0, 1.0]]),
         space="linear",
     )
-    fc = group_log2_fold_change(result, group_a=0, group_b=1)
+    fc = group_site_change(result, group_a=0, group_b=1)
     assert fc[5] == pytest.approx(1.0)  # log2(mean[4,4] / mean[2,2])
     assert fc[9] == pytest.approx(0.0)  # log2(1 / 1)
 
@@ -184,7 +184,7 @@ def test_presence_filter_drops_one_sided_species():
     assert filt.values[0, col(filt)] == pytest.approx(20.0)  # one-sided SAK dropped
 
 
-def test_group_log2_fold_change_log2_space_uses_difference():
+def test_group_site_change_log2_space_uses_difference():
     # Values are already log2 abundances -> FC is the difference of group means, not a log-ratio.
     result = RollupResult(
         sites=[5],
@@ -192,11 +192,11 @@ def test_group_log2_fold_change_log2_space_uses_difference():
         values=np.array([[1.0, 1.0, 3.5, 3.5]]),
         space="log2",
     )
-    fc = group_log2_fold_change(result, group_a=0, group_b=1)
+    fc = group_site_change(result, group_a=0, group_b=1)
     assert fc[5] == pytest.approx(2.5)  # 3.5 - 1.0
 
 
-def test_group_log2_fold_change_logit_space_uses_difference():
+def test_group_site_change_logit_space_uses_difference():
     # Logit values are already in a log space -> change is the difference of group means.
     result = RollupResult(
         sites=[5],
@@ -204,7 +204,7 @@ def test_group_log2_fold_change_logit_space_uses_difference():
         values=np.array([[-2.0, 1.0]]),
         space="logit",
     )
-    change = group_log2_fold_change(result, group_a=0, group_b=1)
+    change = group_site_change(result, group_a=0, group_b=1)
     assert change[5] == pytest.approx(3.0)  # 1.0 - (-2.0)
 
 

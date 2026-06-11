@@ -82,7 +82,10 @@ injected truth.
 
 ## Code ↔ Paper Mapping (current state)
 
-`protgen.py` implements the **PTM digestion stage** (protein → distinct modified peptide species):
+The **`protgen/` package** implements the **PTM digestion stage** (protein → distinct modified peptide
+species), one module per concern — `peptide.py` (`Peptide`), `protein.py` (`MISCLEAVAGE_MODELS`,
+`Protein`), `generator.py` (`AMINO_ACIDS`, `ProteinGenerator`), `truth.py` (`make_group_proteins`,
+`true_site_*`); `__init__` re-exports all, so `from quantproteomicssimbox.protgen import X` is unchanged:
 - `Peptide` — one distinct peptide species. Fields: `sequence` (plain residues, no mod markers),
   `abundance` (a single field: the copy count in a ground-truth `Protein`, or the simulated
   intensity in an observed `Sample` — the holding object's role decides which),
@@ -140,18 +143,25 @@ is the *observation* layer that derives noisy observed data from that truth with
 
 **Groups, fold change, and the Experiment layer.** Group effects live in the *ground truth* (per-group
 occupancy), not the noise model:
-- `make_group_proteins(sequence, n_groups, abundance, …)` (protgen.py) — one `Protein` per group,
+- `make_group_proteins(sequence, n_groups, abundance, …)` (protgen/truth.py) — one `Protein` per group,
   **same sequence**, **independent occupancy**. Same sequence ⇒ `alpha` shared across groups
   (site_effects keyed on sequence) and group samples pool in one `build_site_tables` call; `beta`
   stays per `(group, subject)`.
-- `Protein.true_site_abundances()` + `true_site_log2_fold_change(a, b)` (protgen.py) — known per-site
-  truth: occupancy `mod_table[:, r].sum()`, and `log2(occ_b/occ_a)`.
-- `group_log2_fold_change(result, group_a, group_b)` (rollups.py) — estimated per-site change from a
-  `RollupResult`, branching on `result.space`: log-space values (`log2`/`logit`) → `mean_b - mean_a`;
-  ratio-space (`linear`/`fraction`) → `log2(mean_b/mean_a)`. Covers both the paper's
+- `Protein.true_site_abundances()` (protgen/protein.py) + `true_site_log2_fold_change(a, b)`
+  (protgen/truth.py) — known per-site truth: occupancy `mod_table[:, r].sum()`, and `log2(occ_b/occ_a)`.
+- `group_site_change(result, group_a, group_b)` (rollups.core) — estimated per-site change from a
+  `RollupResult`, branching on `result.space` (a `Space` enum): log-space values (`log2`/`logit`) →
+  `mean_b - mean_a`; ratio-space (`linear`/`fraction`) → `log2(mean_b/mean_a)`. Covers both the paper's
   *modified-peptide-intensity* FC and the stoichiometry roll-up below.
 
-**Stoichiometry roll-up (rollups.py / protgen.py / experiment.py).** A second quantification approach:
+**Quantification methods & scoring (`methods.py` + `Experiment.score`).** A `QuantMethod(name, roll_up,
+true_change)` bundles a roll-up with the ground-truth change it should be scored against, so **one**
+`Experiment.score(method, min_per_group=…)` covers every approach (intensity, pooled / per-peptide
+stoichiometry, future LiP). Build them with `intensity_method(scaling, aggregation, space)` /
+`stoichiometry_method(method)`, or iterate the `QUANT_METHODS` registry. `score` is a single RMSE loop:
+roll up each protein, `group_site_change`, compare to `method.true_change`.
+
+**Stoichiometry roll-up (rollups/stoichiometry.py / protgen/truth.py / methods.py).** A second quantification approach:
 per-site **modified fraction** `s = (abundance modified at the site) / (abundance of all peptides
 spanning the site, mod + unmod)`, a ratio of two sums (not a scale-then-aggregate over a peptide
 matrix), then a selectable transform.
@@ -167,14 +177,14 @@ matrix), then a selectable transform.
   `"fraction"`) or `logit` (`logit2`, space `"logit"`). Shipped names: `fraction`, `logit`,
   `logit_pseudocount`, `peptide_mean`, `peptide_median`, `peptide_mean_logit`, `peptide_median_logit`.
   `roll_up_stoichiometry(samples, method, min_per_group)` applies one → a `RollupResult` whose `space`
-  drives `group_log2_fold_change`. Per-span fractions are unbiased for `s`, so `peptide_*` are scored
+  drives `group_site_change`. Per-span fractions are unbiased for `s`, so `peptide_*` are scored
   against the same truth as `pooled`; with miscleavage they fragment a site into several spans, so
   `peptide_*` recover truth exactly only at miscleavage 0 (single span).
 - **Truth** `Protein.true_site_stoichiometry()` = `m_r/M` and `true_site_stoichiometry_change(a, b,
-  space)` (protgen.py): `fraction` → `log2(s_b/s_a)`, `logit` → `logit2(s_b)−logit2(s_a)`. The
+  space)` (protgen/truth.py): `fraction` → `log2(s_b/s_a)`, `logit` → `logit2(s_b)−logit2(s_a)`. The
   fraction change equals the count FC `log2(m_b/m_a)` **only because both groups share `M`** (noted in
-  code). `Experiment.roll_up_stoichiometry` / `score_stoichiometry(method)` score each method against
-  its matching truth.
+  code). Scored via `Experiment.score(stoichiometry_method(method))` (each method carries its matching
+  truth — see the methods section above).
 - **Position-aware requirement**: the spanning denominator is exact only under `position_aware=True`
   observation; the agnostic merge biases it (a deliberate study axis — see backlog). With `var=0` +
   position-aware, `mod/total == m_r/M` exactly (RMSE 0). The subject effect `beta` **cancels** in the
@@ -187,7 +197,7 @@ matrix), then a selectable transform.
   `linear` → **sum matched** (a total), mean/median biased by peptide count. All four combos are
   intentionally allowed (no constraint) — the "biased" ones (log2+sum, linear+mean) are exactly the
   demonstrations of the finding.
-- **Presence filter `min_per_group`** (rollups.py `roll_up`, default 1): pmartR-style — keep a peptide
+- **Presence filter `min_per_group`** (`rollups.roll_up`, default 1): pmartR-style — keep a peptide
   row only if observed in ≥ that many samples of **every** group; a site with no survivors is dropped.
   Default 1 drops "one-sided" species (present in one group only) that otherwise blow up log2-`sum`.
   Set 0 to disable (needed for the exact linear+sum recovery check).
@@ -199,17 +209,18 @@ matrix), then a selectable transform.
 - `experiment.py` `Experiment(n_proteins, …, repeat_units, miscleavage_rate, miscleavage_model, var_subject, var_site, var_species, missingness, position_aware, rng)` — multi-protein
   study facade: `build()` (per-group proteins) → `observe()` (one **shared** `ObservationModel`, so
   `beta` is shared across proteins, `alpha` per protein; applies `missingness` per protein) →
-  `roll_up()` (one `RollupResult` per protein) → `score(scaling, aggregation, space, min_per_group)`
-  = RMSE of estimated vs true per-site log₂FC over all sites of all proteins. Zero-variance + `sum` +
-  `space="linear"` + `min_per_group=0` recovers truth exactly (RMSE 0).
+  `roll_up(method)` (one `RollupResult` per protein) → `score(method, min_per_group)` = RMSE of
+  estimated vs true per-site change over all sites of all proteins, for any `QuantMethod`.
+  Zero-variance + `intensity_method("rollup","sum","linear")` + `min_per_group=0` recovers truth
+  exactly (RMSE 0).
 
 **Not yet implemented** (replication backlog): the residual **log2-`sum` magnitude gap** (~2× the
 paper's ~3 — from over-fragmented peptide species per site; would need coarser feature granularity to
 fully match); the **TMT-plex (block) missingness** variant (label-free MNAR is done); the
-`rrollup`/`zrollup` scaling methods and the LiP ProK-site table builder in `rollups.py` (the `rollup`
+`rrollup`/`zrollup` scaling methods and the LiP ProK-site table builder in `rollups/` (the `rollup`
 scaling, mean/median/sum aggregations, the linear/log2 `space`, the `min_per_group` presence filter,
-the PTM site-table builder, `roll_up`, `group_log2_fold_change`, `apply_missingness`, and the
-`Experiment` scorer are implemented); mean RMSE ± std error across replicate `Experiment`s and the
+the PTM site-table builder, `roll_up`, `group_site_change`, `apply_missingness`, and the unified
+`Experiment.score(method)` are implemented); mean RMSE ± std error across replicate `Experiment`s and the
 full >600-combo sweep; and the entire **LiP-MS** pipeline (masking, ProK digest, two-stage digestion).
 The **stoichiometry / logit-FC** analysis is now implemented (see the Stoichiometry roll-up section
 above); its remaining exploration directions are in the backlog below.
@@ -233,27 +244,28 @@ stoichiometry roll-up has landed — per-site fraction = mod abundance / total s
   whether a mod-vs-unmod efficiency difference (within-span, which per-peptide does *not* cancel)
   belongs in the model.
 
-**Structural refactor backlog** (deferred reorganizations — code works, these are hygiene/leverage):
-- **Unified `QuantMethod` registry** *(highest leverage)* — `Experiment.score` and `score_stoichiometry`
-  share a byte-identical RMSE loop, differing only in roll-up + truth fn. Bundle each named method's
-  `roll_up(samples) -> RollupResult` **and** its matching `true_change(a, b)` into one strategy, so a
-  single `score(method)` covers intensity / pooled-stoich / per-peptide / future LiP, and the notebook
-  iterates one registry instead of special-casing `score` vs `score_stoichiometry`.
-- **Split `rollups.py`** (411 lines) into intensity vs stoichiometry roll-up modules + a small shared
-  core (`RollupResult`, the group-change fn).
-- **Rename `group_log2_fold_change` -> `group_site_change`** and make `space` an enum (it no longer
-  always returns a log2 fold-change — it's a difference for `log2`/`logit`).
-- **DRY the three builders** (`build_site_tables`, `build_stoichiometry_tables`,
-  `build_peptide_fraction_tables`) — extract the shared samples×peptides×serine-span indexing.
+**Structural refactor backlog** — *all done* (kept here as a record of the current architecture):
+- ✅ **Unified `QuantMethod` registry** — `methods.py` bundles each method's `roll_up` + `true_change`;
+  one `Experiment.score(method)` covers intensity / pooled-stoich / per-peptide / future LiP, and
+  notebooks iterate `QUANT_METHODS` (or the factories). The old `score`/`score_stoichiometry` are gone.
+- ✅ **Split `rollups.py` into the `rollups/` package** — `core` (`RollupResult`, `Space`,
+  `group_site_change`, shared serine-span helpers), `intensity`, `stoichiometry`; `__init__` re-exports.
+- ✅ **Renamed `group_log2_fold_change` → `group_site_change`** with a `Space` str-enum
+  (`linear`/`log2`/`fraction`/`logit`).
+- ✅ **DRY'd the builders** — the two stoichiometry builders share `core.iter_peptide_spans` /
+  `core.serine_sites_and_keys`.
 
 ## Package Overview
 
 - **Package name**: `quantproteomicssimbox`
 - **Entry point**: `src/quantproteomicssimbox/__init__.py`
-- **Core modules**: `protgen.py` (ground-truth simulation + group occupancy), `observation.py`
-  (observed-sample layer), `rollups.py` (peptide→site intensity roll-up + the stoichiometry-fraction
-  roll-up + group fold-change; `rrollup`/`zrollup` stubbed), `experiment.py` (multi-protein study +
-  RMSE scoring), `utils.py` (shared constants + the `logit2` helper)
+- **Core modules**: `protgen/` package (ground-truth simulation + group occupancy: `peptide`,
+  `protein`, `generator`, `truth`), `observation.py`
+  (observed-sample layer), `rollups/` package (`core` shared types + `group_site_change` + span
+  helpers; `intensity`; `stoichiometry`; `rrollup`/`zrollup` stubbed), `methods.py`
+  (`QuantMethod` strategy + `intensity_method`/`stoichiometry_method` factories + `QUANT_METHODS`),
+  `experiment.py` (multi-protein study + unified `score(method)`), `utils.py` (shared constants +
+  the `logit2` helper)
 - **README.md is empty** — do not rely on it for context or requirements.
 - **Type hints**: `py.typed` is present, so type-checking tools should respect it.
 
@@ -280,21 +292,27 @@ stoichiometry roll-up has landed — per-site fraction = mod abundance / total s
   for deeper context rather than long in-code prose.
 - **Library / package** (not a CLI app). No main entrypoint script besides `__init__.py`.
 - **`src/` layout** — imports should reference the package name, e.g. `from quantproteomicssimbox.protgen import ProteinGenerator`.
-- **`rollups.py`** scaffolds the paper's two-stage roll-up: `SCALINGS` (`rollup` implemented;
-  `rrollup`/`zrollup` raise `NotImplementedError`) × `AGGREGATIONS` (`mean`/`median`/`sum`),
-  `build_site_tables` (PTM peptide→site matrices), and the `roll_up` orchestrator. Extend new
-  roll-up logic here: implement `scale_rrollup`/`scale_zrollup`, and add a LiP ProK-site builder.
+- **`rollups/` package** holds the roll-up families: `intensity.py` scaffolds the paper's two-stage
+  roll-up — `SCALINGS` (`rollup` implemented; `rrollup`/`zrollup` raise `NotImplementedError`) ×
+  `AGGREGATIONS` (`mean`/`median`/`sum`), `build_site_tables`, and the `roll_up` orchestrator;
+  `stoichiometry.py` holds the fraction roll-up; `core.py` the shared `RollupResult`/`Space`/
+  `group_site_change` + span helpers. Extend here: implement `scale_rrollup`/`scale_zrollup`, add a
+  LiP ProK-site builder, register new stoichiometry methods. New scoring methods go in `methods.py`.
 - **`utils.py` is minimal** (`amino_acids` set) — shared constants only.
-- **`protgen.py` contains the core simulation logic** (`Protein` class, `ProteinGenerator` class, trypsin digestion simulation, serine modification assignment).
-- **No `__main__` blocks** in `protgen.py` or `__init__.py` — use `uv run python -c "from quantproteomicssimbox import ..."` for quick testing.
+- **`protgen/` holds the core simulation logic** — `protein.py` (`Protein`: trypsin digestion +
+  serine-modification occupancy), `generator.py` (`ProteinGenerator`), `peptide.py` (`Peptide`),
+  `truth.py` (group construction + known per-site change).
+- **No `__main__` blocks** anywhere — use `uv run python -c "from quantproteomicssimbox import ..."` for quick testing.
 - **Tests live in `tests/`** at the repo root (`pytest`, a dev dependency). `tests/conftest.py` exposes
   a seeded `rng` fixture (`SEED = 12345`) so the stochastic simulation is deterministic in tests.
   `test_protgen.py` covers the trypsin rules, the `U(1, M)` occupancy model, proportion-controlled
   weighted miscleavage, and the `Peptide` quantification (`Protein.peptides`);
   `test_observation.py` covers `aggregate_peptides` (agnostic vs aware) and the `ObservationModel`;
-  `test_rollups.py` covers the roll-up + `group_log2_fold_change`; `test_experiment.py` covers the
-  multi-protein `Experiment` (shared β / per-protein α, pooled roll-up, zero-variance RMSE = 0);
-  `test_utils.py` covers the amino-acid set. Run with `uv run pytest`. Config is in
+  `test_rollups.py` covers the roll-up + `group_site_change` (intensity & stoichiometry, incl.
+  per-peptide); `test_methods.py` covers the `QuantMethod` factories/registry; `test_experiment.py`
+  covers the multi-protein `Experiment` (shared β / per-protein α, unified `score(method)`,
+  zero-variance RMSE = 0); `test_utils.py` covers the amino-acid set + `logit2`. Run with `uv run
+  pytest`. Config is in
   `[tool.pytest.ini_options]` of `pyproject.toml`.
 - **No CI/CD workflows** (no `.github/workflows/` directory). No pre-commit hooks or linting/formatting configured.
 - **No build or deploy scripts** — the project is currently a local library.

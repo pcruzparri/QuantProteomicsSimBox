@@ -2,13 +2,14 @@
 
 Covers the multi-protein orchestrator: dataset build, the shared-model effect structure (beta shared
 across proteins, alpha per protein), pooled per-protein roll-up, and the end-to-end RMSE scoring of
-estimated vs known per-site log2 fold-change.
+estimated vs known per-site change via a `QuantMethod`.
 """
 
 import numpy as np
 import pytest
 
 from quantproteomicssimbox.experiment import Experiment
+from quantproteomicssimbox.methods import intensity_method, stoichiometry_method
 
 
 def _experiment(**kwargs) -> Experiment:
@@ -69,12 +70,13 @@ def test_score_zero_variance_linear_sum_recovers_truth():
     # In LINEAR space with no presence filter, var=0 -> observed == true counts; sum recovers
     # per-group occupancy at each site, so estimated FC == true FC and RMSE is 0.
     exp = _experiment(var_subject=0.0, var_site=0.0)
-    assert exp.score("rollup", "sum", space="linear", min_per_group=0) == pytest.approx(0.0, abs=1e-9)
+    method = intensity_method("rollup", "sum", "linear")
+    assert exp.score(method, min_per_group=0) == pytest.approx(0.0, abs=1e-9)
 
 
 def test_score_positive_with_subject_variance():
     exp = _experiment(var_subject=1.0, var_site=1.0)
-    rmse = exp.score("rollup", "mean", space="log2")
+    rmse = exp.score(intensity_method("rollup", "mean", "log2"))
     assert np.isfinite(rmse)
     assert rmse > 0.0
 
@@ -83,10 +85,10 @@ def test_aggregation_space_flips_matched_aggregator():
     # Without the presence filter, the matched (low-RMSE) aggregator flips with the space:
     # sum in linear, mean in log2.
     exp = _experiment(var_subject=1.0, var_site=1.0)
-    lin_sum = exp.score("rollup", "sum", space="linear", min_per_group=0)
-    lin_mean = exp.score("rollup", "mean", space="linear", min_per_group=0)
-    log_sum = exp.score("rollup", "sum", space="log2", min_per_group=0)
-    log_mean = exp.score("rollup", "mean", space="log2", min_per_group=0)
+    lin_sum = exp.score(intensity_method("rollup", "sum", "linear"), min_per_group=0)
+    lin_mean = exp.score(intensity_method("rollup", "mean", "linear"), min_per_group=0)
+    log_sum = exp.score(intensity_method("rollup", "sum", "log2"), min_per_group=0)
+    log_mean = exp.score(intensity_method("rollup", "mean", "log2"), min_per_group=0)
     assert lin_sum < lin_mean  # linear: sum unbiased, mean biased by peptide count
     assert log_mean < log_sum  # log2: mean unbiased, sum inflated by peptide count (paper's result)
 
@@ -94,8 +96,9 @@ def test_aggregation_space_flips_matched_aggregator():
 def test_presence_filter_curbs_log2_sum_inflation():
     # Dropping one-sided species (present in only one group) reduces the log2-sum blow-up.
     exp = _experiment(var_subject=1.0, var_site=1.0)
-    unfiltered = exp.score("rollup", "sum", space="log2", min_per_group=0)
-    filtered = exp.score("rollup", "sum", space="log2", min_per_group=1)
+    log2_sum = intensity_method("rollup", "sum", "log2")
+    unfiltered = exp.score(log2_sum, min_per_group=0)
+    filtered = exp.score(log2_sum, min_per_group=1)
     assert filtered < unfiltered
 
 
@@ -109,24 +112,25 @@ def test_missingness_drops_observations_and_keeps_score_finite():
     n_missing = sum(len(s.peptides) for pooled in missing.samples for s in pooled)
 
     assert n_missing < n_clean
-    assert np.isfinite(missing.score("rollup", "mean", space="log2"))
+    assert np.isfinite(missing.score(intensity_method("rollup", "mean", "log2")))
 
 
 def test_run_is_reproducible_under_seed():
+    method = intensity_method("rollup", "median", "log2")
     a = _experiment(var_subject=1.0, var_site=1.0, rng=np.random.default_rng(42))
     b = _experiment(var_subject=1.0, var_site=1.0, rng=np.random.default_rng(42))
-    assert a.score("rollup", "median") == pytest.approx(b.score("rollup", "median"))
+    assert a.score(method) == pytest.approx(b.score(method))
 
 
 # --------------------------------------------------------------------------- #
-# Stoichiometry scoring
+# Stoichiometry scoring (via stoichiometry_method)
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("method", ["fraction", "logit"])
 def test_score_stoichiometry_zero_variance_recovers_truth(method):
     # var=0 + position-aware: each copy contributes exactly one spanning peptide per site, so observed
     # mod/total == m_r/M == true stoichiometry -> estimated change == true change, RMSE 0.
     exp = _experiment(var_subject=0.0, var_site=0.0, position_aware=True)
-    assert exp.score_stoichiometry(method, min_per_group=0) == pytest.approx(0.0, abs=1e-9)
+    assert exp.score(stoichiometry_method(method), min_per_group=0) == pytest.approx(0.0, abs=1e-9)
 
 
 def test_score_stoichiometry_fraction_cancels_subject_effect():
@@ -134,14 +138,14 @@ def test_score_stoichiometry_fraction_cancels_subject_effect():
     # Only the per-site effect (numerator-only) biases the fraction, so large subject variance alone
     # still recovers the truth exactly.
     exp = _experiment(var_subject=9.0, var_site=0.0, position_aware=True)
-    assert exp.score_stoichiometry("fraction", min_per_group=0) == pytest.approx(0.0, abs=1e-9)
+    assert exp.score(stoichiometry_method("fraction"), min_per_group=0) == pytest.approx(0.0, abs=1e-9)
 
 
 @pytest.mark.parametrize("method", ["fraction", "logit"])
 def test_score_stoichiometry_positive_with_site_variance(method):
     # The per-site effect does not cancel (it multiplies only the modified peptides), so RMSE > 0.
     exp = _experiment(var_subject=1.0, var_site=1.0, position_aware=True)
-    rmse = exp.score_stoichiometry(method)
+    rmse = exp.score(stoichiometry_method(method))
     assert np.isfinite(rmse)
     assert rmse > 0.0
 
@@ -151,7 +155,7 @@ def test_score_peptide_stoichiometry_recovers_truth_without_miscleavage(method):
     # No miscleavage -> exactly one span per site, so the per-peptide aggregation reduces to the
     # pooled ratio and recovers the truth exactly at var=0.
     exp = _experiment(miscleavage_rate=0.0, var_subject=0.0, var_site=0.0, position_aware=True)
-    assert exp.score_stoichiometry(method, min_per_group=0) == pytest.approx(0.0, abs=1e-9)
+    assert exp.score(stoichiometry_method(method), min_per_group=0) == pytest.approx(0.0, abs=1e-9)
 
 
 def test_peptide_methods_score_finite_under_miscleavage_and_missingness():
@@ -159,7 +163,7 @@ def test_peptide_methods_score_finite_under_miscleavage_and_missingness():
     # the regime where they can differ from pooled (studied in the notebook).
     exp = _experiment(var_subject=1.0, var_site=1.0, missingness=0.3, position_aware=True)
     for method in ("peptide_mean", "peptide_median", "peptide_mean_logit"):
-        assert np.isfinite(exp.score_stoichiometry(method))
+        assert np.isfinite(exp.score(stoichiometry_method(method)))
 
 
 # --------------------------------------------------------------------------- #
@@ -171,7 +175,7 @@ def test_var_species_preserves_exact_recovery_without_miscleavage(method):
     # span per site (no miscleavage), even large species variance recovers the truth exactly.
     exp = _experiment(miscleavage_rate=0.0, var_subject=0.0, var_site=0.0, var_species=9.0,
                       position_aware=True)
-    assert exp.score_stoichiometry(method, min_per_group=0) == pytest.approx(0.0, abs=1e-9)
+    assert exp.score(stoichiometry_method(method), min_per_group=0) == pytest.approx(0.0, abs=1e-9)
 
 
 def test_var_species_biases_pooled_but_not_per_peptide_under_fragmentation():
@@ -179,10 +183,11 @@ def test_var_species_biases_pooled_but_not_per_peptide_under_fragmentation():
     # efficiency, while the per-peptide fraction cancels it. Same seed -> same ground truth & digestion,
     # so the only difference is the observation's species term.
     kw = dict(miscleavage_rate=0.5, var_subject=0.0, var_site=0.0, position_aware=True)
-    pooled_plain = _experiment(var_species=0.0, **kw).score_stoichiometry("fraction", min_per_group=0)
-    pooled_eff = _experiment(var_species=9.0, **kw).score_stoichiometry("fraction", min_per_group=0)
-    pep_plain = _experiment(var_species=0.0, **kw).score_stoichiometry("peptide_mean", min_per_group=0)
-    pep_eff = _experiment(var_species=9.0, **kw).score_stoichiometry("peptide_mean", min_per_group=0)
+    frac, pep = stoichiometry_method("fraction"), stoichiometry_method("peptide_mean")
+    pooled_plain = _experiment(var_species=0.0, **kw).score(frac, min_per_group=0)
+    pooled_eff = _experiment(var_species=9.0, **kw).score(frac, min_per_group=0)
+    pep_plain = _experiment(var_species=0.0, **kw).score(pep, min_per_group=0)
+    pep_eff = _experiment(var_species=9.0, **kw).score(pep, min_per_group=0)
     assert pooled_plain == pytest.approx(0.0, abs=1e-9)  # no efficiency weighting -> exact
     assert pooled_eff > 0.1  # efficiency biases the pooled ratio
     assert pep_eff == pytest.approx(pep_plain)  # per-peptide fraction is invariant to efficiency
