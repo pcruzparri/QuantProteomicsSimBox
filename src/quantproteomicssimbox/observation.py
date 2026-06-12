@@ -47,6 +47,7 @@ class ObservationModel:
         var_subject: float = 0.0,
         var_site: float = 0.0,
         var_species: float = 0.0,
+        detection_limit: int = 1,
         position_aware: bool = False,
         rng: np.random.Generator | None = None,
     ) -> None:
@@ -56,6 +57,11 @@ class ObservationModel:
         # fixed physicochemical factor shared by every mod-form of a sequence, so it cancels inside a
         # span's modified fraction but not between spans (the effect per-peptide aggregation targets).
         self.var_species = var_species
+        # Limit of detection (proxy): a peptide species must arise from >= detection_limit proteoform
+        # copies to be observed. Default 1 keeps every species; raising it prunes the long tail of rare
+        # miscleavage forms (singletons dominate at high miscleavage) that real bottom-up MS would not
+        # identify — which is what inflates the log2-`sum` aggregator beyond the paper's magnitude.
+        self.detection_limit = detection_limit
         self.position_aware = position_aware  # collapse indistinguishable peptides in a Sample?
         self.rng = rng if rng is not None else np.random.default_rng()
         # beta_ik (Eq. 4): one draw per (group, subject), reused across all that subject's peptides and proteins.
@@ -81,6 +87,8 @@ class ObservationModel:
 
         observed: list[Peptide] = []
         for pep in protein.peptides:
+            if pep.abundance < self.detection_limit:
+                continue  # below the limit of detection: too few copies produce this peptide species
             exponent = beta  # log2-space shift = beta_ik + sum_{r in S} alpha_r (+ gamma_p) (Eq. 3)
             for mod_site in pep.mod_sites:
                 site_key = (protein.sequence, mod_site)  # alpha is a property of the site, not the peptide form

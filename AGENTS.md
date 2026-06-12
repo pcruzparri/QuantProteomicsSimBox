@@ -131,13 +131,18 @@ is the *observation* layer that derives noisy observed data from that truth with
   `position_aware=True` it also keys on start position (no cross-locus merge). Agnostic (default)
   mirrors that bottom-up MS cannot distinguish identical sequences at different loci; merged species
   keep the first occurrence's position fields. Returns new `Peptide`s (inputs untouched).
-- `ObservationModel(var_subject, var_site, var_species, position_aware, rng)` — applies the observation
-  model (Eqs. 2–5): `sample()`/`sample_group()` apply per-subject `beta_ik` and per-site `alpha_r`
-  Normal effects (`var_*` are variances). **`var_species` (extension)** adds a per-peptide-species
-  (backbone) log2 ionization efficiency `gamma_p` keyed on the peptide *sequence* — shared by a span's
-  mod & unmod forms, so it **cancels inside a span's modified fraction** (per-peptide stoichiometry is
-  invariant to it) but drives between-span abundance differences that bias the pooled ratio and that
-  abundance-dependent missingness keys on. Threaded through `Experiment(var_species, …)`. `apply_missingness(samples, rate)` drops
+- `ObservationModel(var_subject, var_site, var_species, detection_limit, position_aware, rng)` — applies
+  the observation model (Eqs. 2–5): `sample()`/`sample_group()` apply per-subject `beta_ik` and per-site
+  `alpha_r` Normal effects (`var_*` are variances). **`var_species` (extension)** adds a
+  per-peptide-species (backbone) log2 ionization efficiency `gamma_p` keyed on the peptide *sequence* —
+  shared by a span's mod & unmod forms, so it **cancels inside a span's modified fraction** (per-peptide
+  stoichiometry is invariant to it) but drives between-span abundance differences that bias the pooled
+  ratio and that abundance-dependent missingness keys on. **`detection_limit` (extension, default 1 =
+  off)** is a limit-of-detection proxy: a peptide species must arise from ≥ that many proteoform copies
+  to be observed, pruning the long tail of rare miscleavage singletons (64% of species at 50%
+  miscleavage) that real MS would not identify — these are what inflate the log2-`sum` aggregator
+  (≈3 copies brings log2-sum from ~10 to the paper's ~3–4; mean/median barely move). Threaded through
+  `Experiment(var_species, detection_limit, …)`. `apply_missingness(samples, rate)` drops
   `round(rate · n_obs)` observations, **abundance-dependent** (prob ∝ 1/abundance, MNAR; Bramer
   et al. label-free variant) — the TMT-plex (block) variant is the remaining refinement.
 
@@ -214,11 +219,13 @@ matrix), then a selectable transform.
   Zero-variance + `intensity_method("rollup","sum","linear")` + `min_per_group=0` recovers truth
   exactly (RMSE 0).
 
-**Not yet implemented** (replication backlog): the residual **log2-`sum` magnitude gap** (~2× the
-paper's ~3 — from over-fragmented peptide species per site; would need coarser feature granularity to
-fully match); the **TMT-plex (block) missingness** variant (label-free MNAR is done); the LiP ProK-site
-table builder in `rollups/`; and the entire **LiP-MS** pipeline (masking, ProK digest, two-stage
-digestion). The full PTM intensity + stoichiometry roll-up is implemented (all three scalings
+**Not yet implemented** (replication backlog): the **TMT-plex (block) missingness** variant (label-free
+MNAR is done); the LiP ProK-site table builder in `rollups/`; and the entire **LiP-MS** pipeline
+(masking, ProK digest, two-stage digestion). The **log2-`sum` magnitude gap** is now explained and
+closeable: it came from a long tail of rare miscleavage singletons (no coarser-granularity rewrite
+needed) — the new `ObservationModel.detection_limit` (≈3 copies) prunes them and brings log2-sum from
+~10 into the paper's ~3–4 while leaving mean/median and the ranking unchanged. The full PTM intensity +
+stoichiometry roll-up is implemented (all three scalings
 `rollup`/`rrollup`/`zrollup`, mean/median/sum aggregations, linear/log2 `space`, the `min_per_group`
 presence filter, the PTM site-table builder, `roll_up`, `group_site_change`, `apply_missingness`, and
 the unified `Experiment.score(method)`); the **sweep harness** (`sweep.run_sweep`, mean RMSE ± std error

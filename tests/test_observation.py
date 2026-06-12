@@ -191,6 +191,19 @@ def test_species_effect_keyed_by_sequence_shared_across_mod_forms():
     assert ratios == pytest.approx([ratios[0]] * len(ratios))  # same 2^gamma for both forms
 
 
+def test_detection_limit_prunes_rare_species():
+    # A peptide species must arise from >= detection_limit proteoform copies to be observed (an LOD
+    # proxy). At high miscleavage most species are singletons, so a higher limit observes fewer.
+    gen = ProteinGenerator(rng=np.random.default_rng(6))
+    p = gen.generate_protein(120)
+    p.set_quantification(50, miscleavage_rate=0.5)
+    counts = {
+        dl: len(ObservationModel(detection_limit=dl, rng=np.random.default_rng(0)).sample(p, 0, 0).peptides)
+        for dl in (1, 3, 5)
+    }
+    assert counts[1] > counts[3] > counts[5]  # default 1 keeps the most; higher limit prunes more
+
+
 def test_sample_does_not_mutate_protein():
     gen = ProteinGenerator(rng=np.random.default_rng(4))
     p = gen.generate_protein(60)

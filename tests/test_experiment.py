@@ -121,6 +121,21 @@ def test_every_scaling_scores_finite(scaling):
     assert np.isfinite(exp.score(intensity_method(scaling, "median", "log2")))
 
 
+def test_detection_limit_curbs_log2_sum_inflation():
+    # The log2-sum aggregator is inflated by the species count per site, which a long tail of rare
+    # miscleavage singletons blows up. A detection limit prunes them, sharply cutting log2-sum RMSE
+    # (toward the paper's magnitude) while barely moving the matched mean aggregator.
+    sum_method = intensity_method("rollup", "sum", "log2")
+    mean_method = intensity_method("rollup", "mean", "log2")
+
+    def exp(dl):
+        return _experiment(var_subject=1.0, var_site=1.0, miscleavage_rate=0.5,
+                           protein_length=160, abundance=200, detection_limit=dl)
+
+    assert exp(3).score(sum_method) < exp(1).score(sum_method)
+    assert exp(3).score(mean_method) < exp(1).score(sum_method)  # mean stays well below inflated sum
+
+
 def test_zrollup_is_worst_scaling():
     # The paper's finding: z-scoring each peptide destroys the log2 scale, so zrollup has the highest
     # RMSE. Average a few seeds for a stable comparison against the no-scaling rollup.

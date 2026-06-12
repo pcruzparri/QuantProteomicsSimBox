@@ -30,6 +30,7 @@ class Experiment:
         var_subject: float = 0.0,
         var_site: float = 0.0,
         var_species: float = 0.0,
+        detection_limit: int = 1,
         missingness: float = 0.0,
         position_aware: bool = False,
         rng: np.random.Generator | None = None,
@@ -50,6 +51,7 @@ class Experiment:
             var_subject=var_subject,
             var_site=var_site,
             var_species=var_species,
+            detection_limit=detection_limit,
             position_aware=position_aware,
             rng=self.rng,
         )
