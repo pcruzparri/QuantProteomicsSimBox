@@ -55,15 +55,15 @@ Data flows through four stages. Each later stage only depends on the one before 
 truth is kept separate from the noisy observation** so the truth is never contaminated.
 
 ```
-   ┌────────────────────┐   ┌──────────────────────┐   ┌──────────────────┐   ┌───────────────┐
-   │  1. GROUND TRUTH   │ → │   2. OBSERVATION     │ → │   3. ROLL-UP     │ → │  4. SCORING   │
-   │   (protgen)        │   │  (observation.py)    │   │  (rollups/)      │   │ (methods +    │
-   │                    │   │                      │   │                  │   │  experiment)  │
+   ┌────────────────────┐   ┌──────────────────────┐   ┌───────────────────┐   ┌───────────────┐
+   │  1. GROUND TRUTH   │ → │   2. OBSERVATION     │ → │   3. ROLL-UP      │ → │  4. SCORING   │
+   │   (protgen)        │   │  (observation.py)    │   │  (rollups/)       │   │ (methods +    │
+   │                    │   │                      │   │                   │   │  experiment)  │
    │ proteins, which    │   │ what the instrument  │   │ aggregate peptides│   │ compare to    │
    │ copies are modified│   │ actually sees: noise,│   │ back up to a      │   │ the planted   │
    │ where, digestion   │   │ missing values,      │   │ per-site number   │   │ truth → RMSE  │
    │ into peptides      │   │ detection limits     │   │ (the methods)     │   │               │
-   └────────────────────┘   └──────────────────────┘   └──────────────────┘   └───────────────┘
+   └────────────────────┘   └──────────────────────┘   └───────────────────┘   └───────────────┘
 ```
 
 1. **Ground truth** — Build proteins; for each modifiable site decide how many of the protein's copies
@@ -340,7 +340,7 @@ GROUND TRUTH ─ what is really there
 └── digestion ─ how the enzyme cuts
       ├── digestion = per_copy ...... each molecule cut independently (finer; closer to physical reality)
       │     └── miscleavage_model = global | bernoulli   (how missed cuts are drawn per copy)
-      └── digestion = per_subject ... one cut pattern per sample (the paper's model; matches its magnitudes)
+      ├── digestion = per_subject ... one cut pattern per sample (the paper's model; matches its magnitudes)
       └── miscleavage_rate = 0.0 | 0.25 | 0.5            (how often the enzyme misses a cut)
 
 OBSERVATION ─ what the instrument reports
