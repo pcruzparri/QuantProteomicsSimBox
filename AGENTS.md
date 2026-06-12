@@ -227,24 +227,24 @@ to a results table is the remaining replication step. The **stoichiometry / logi
 implemented (see the Stoichiometry roll-up section above); its remaining exploration directions are in
 the backlog below.
 
-**Stoichiometry exploration backlog** (research directions to build toward, now that the base
-stoichiometry roll-up has landed — per-site fraction = mod abundance / total spanning abundance, with
-`fraction` / `logit` transforms):
-- **Position-aware vs position-agnostic denominator** — the spanning-abundance denominator is only
-  exact under **position-aware** grouping; the agnostic cross-loci merge (`aggregate_peptides`,
-  `position_aware=False`) collapses same-sequence peptides and distorts which peptides count toward a
-  site. This divergence is **an effect to study in its own right** (how agnostic grouping biases the
-  modified fraction), not merely a correctness caveat — so keep both observation modes runnable
-  through the stoichiometry path.
-- **Per-peptide-span fraction aggregation** — *implemented* (`peptide_mean` / `peptide_median` and
-  their `_logit` variants, via `build_peptide_fraction_tables`). The motivating abundance effect is
-  also implemented (`ObservationModel.var_species`, per-species ionization efficiency). Finding from
-  the notebook sweeps + tests: per-peptide fractions are **provably invariant** to `var_species` (it
-  cancels in each span's ratio), while the pooled ratio degrades with it — so per-peptide **wins once
-  the per-species abundance effect is large** (crossover ≈ `var_species` 7 at 50% miscleavage). Open
-  direction: characterize the win region across miscleavage × missingness × `var_species`, and decide
-  whether a mod-vs-unmod efficiency difference (within-span, which per-peptide does *not* cancel)
-  belongs in the model.
+**Stoichiometry exploration** (per-site fraction = mod abundance / total spanning abundance, with
+`fraction` / `logit` transforms; sweeps live in `playground.ipynb` §C1–C2 via `sweep.run_sweep`):
+- **Position-aware vs position-agnostic denominator** *(C1, characterized)* — the spanning-abundance
+  denominator is exact only under **position-aware** grouping; the agnostic cross-loci merge
+  (`aggregate_peptides`, `position_aware=False`) collapses same-sequence peptides and mis-attributes
+  their intensity across loci. Finding: the agnostic RMSE penalty **grows with repeated-peptide density**
+  (`repeat_units`) and hits the **pooled** ratio harder than per-peptide. Both observation modes stay
+  runnable; agnostic is a deliberate study axis, not a guard.
+- **Per-peptide-span fraction aggregation** *(C2, done)* — `peptide_mean`/`peptide_median` (+ `_logit`)
+  via `build_peptide_fraction_tables`. Per-peptide fractions are **provably invariant** to `var_species`
+  (per-backbone ionization; it cancels in each span's ratio) and to `var_subject`, while the pooled ratio
+  degrades — so per-peptide **wins where the between-span abundance effect dominates** (moderate
+  miscleavage + large `var_species`, low–moderate missingness; heavy missingness starves the per-span
+  average). **Within-span efficiency decision — resolved: no new term.** The within-span mod-vs-unmod
+  efficiency is already the per-site effect `var_site` (alpha_r), which shifts only the modified peptides
+  and so biases the fraction numerator — the one effect per-peptide does *not* cancel
+  (`test_var_site_is_not_cancelled_by_per_peptide`). A *systematic* (non-zero-mean) mod efficiency would
+  largely cancel in the between-group fold-change, so the mean-0 alpha already models what matters for RMSE.
 
 **Structural refactor backlog** — *all done* (kept here as a record of the current architecture):
 - ✅ **Unified `QuantMethod` registry** — `methods.py` bundles each method's `roll_up` + `true_change`;

@@ -197,6 +197,20 @@ def test_var_species_preserves_exact_recovery_without_miscleavage(method):
     assert exp.score(stoichiometry_method(method), min_per_group=0) == pytest.approx(0.0, abs=1e-9)
 
 
+def test_var_site_is_not_cancelled_by_per_peptide():
+    # The per-site effect alpha shifts only the *modified* peptides -> a within-span mod-vs-unmod
+    # ionization difference that the per-peptide fraction does NOT cancel (unlike var_subject and
+    # var_species, which scale a span's mod & unmod forms together). With one span per site (no
+    # miscleavage) alpha is the only error source, so peptide_mean RMSE grows with var_site.
+    def rmse(var_site):
+        return _experiment(
+            miscleavage_rate=0.0, var_subject=0.0, var_site=var_site, position_aware=True
+        ).score(stoichiometry_method("peptide_mean"), min_per_group=0)
+
+    assert rmse(0.0) == pytest.approx(0.0, abs=1e-9)
+    assert rmse(4.0) > 0.1
+
+
 def test_var_species_biases_pooled_but_not_per_peptide_under_fragmentation():
     # Multiple spans per site: the abundance-weighted pooled ratio is distorted by per-species
     # efficiency, while the per-peptide fraction cancels it. Same seed -> same ground truth & digestion,
