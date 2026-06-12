@@ -113,6 +113,20 @@ species), one module per concern — `peptide.py` (`Peptide`), `protein.py` (`MI
   `Peptide` objects whose `abundance` counts the copies that produced them. **Requires `mod_table`**
   (the guard raises `ValueError` otherwise), so call via `set_quantification`, not `digest()` directly.
   There is no `get_peptides()` method.
+- **Digestion granularity `digestion`** (`protgen.DIGESTION_MODES`, set via
+  `set_quantification(…, digestion=…)`; default `"per_copy"`): at what level missed cleavages are
+  realized. **Verified against the reference** (`OptRollingup/code_to_migrate/ptm_utils.R`).
+  - `"per_copy"` — the above per-copy model (each proteoform copy digested independently; closer to
+    physical ground truth). `Protein.peptides` is the shared digest, observed identically by every subject.
+  - `"per_subject"` — **the paper/reference model**: `Protein.peptides` is a *perfect* tryptic digest;
+    each subject re-digests at observation time via `peptides_for_subject(rng)` — merge
+    `round(rate·n_boundaries)` adjacent tryptic peptides (weighted by `1/preceding-length`, the
+    reference's `imperfect_digest`/`choose_peptides_to_merge`), then count copies by modification
+    pattern (`_peptides_from_digestion_map`, == the reference's `get_peptide_counts`). One digestion
+    per sample, so each site carries far fewer species per sample — this is what makes the log2-`sum`
+    magnitude match the paper. `ObservationModel.sample` calls `peptides_for_subject`; occupancy and
+    the per-site truth are digestion-invariant. Threaded through `Experiment(digestion, …)` and
+    `make_group_proteins`.
 - `ProteinGenerator(rng=...)` — `generate_sequence(length, repeat_units=0, unit_length=8) -> str` and
   `generate_protein(...) -> Protein`; samples over the shared `AMINO_ACIDS` alphabet (a sorted tuple
   derived from `utils.amino_acids`). With `repeat_units > 0` it embeds that many copies of one shared
@@ -138,11 +152,11 @@ is the *observation* layer that derives noisy observed data from that truth with
   shared by a span's mod & unmod forms, so it **cancels inside a span's modified fraction** (per-peptide
   stoichiometry is invariant to it) but drives between-span abundance differences that bias the pooled
   ratio and that abundance-dependent missingness keys on. **`detection_limit` (extension, default 1 =
-  off)** is a limit-of-detection proxy: a peptide species must arise from ≥ that many proteoform copies
-  to be observed, pruning the long tail of rare miscleavage singletons (64% of species at 50%
-  miscleavage) that real MS would not identify — these are what inflate the log2-`sum` aggregator
-  (≈3 copies brings log2-sum from ~10 to the paper's ~3–4; mean/median barely move). Threaded through
-  `Experiment(var_species, detection_limit, …)`. `apply_missingness(samples, rate)` drops
+  off)** is an *optional* limit-of-detection proxy: a peptide species must arise from ≥ that many
+  proteoform copies to be observed, pruning rare miscleavage singletons. (Note: it is **not** how the
+  paper's log2-`sum` magnitude is matched — that comes from the faithful `per_subject` digestion above;
+  `detection_limit` is an orthogonal knob, off by default, kept for separate detection-floor studies.)
+  Threaded through `Experiment(var_species, detection_limit, …)`. `apply_missingness(samples, rate)` drops
   `round(rate · n_obs)` observations, **abundance-dependent** (prob ∝ 1/abundance, MNAR; Bramer
   et al. label-free variant) — the TMT-plex (block) variant is the remaining refinement.
 
@@ -211,7 +225,7 @@ matrix), then a selectable transform.
   (mean/median barely move). mean/median magnitudes ≈ the paper's ~1; **sum is still ~2× the paper's
   ~3**, a residual from our peptide-species granularity (more span/mod variants per site than the
   reference) — a finer modeling detail, see backlog.
-- `experiment.py` `Experiment(n_proteins, …, repeat_units, miscleavage_rate, miscleavage_model, var_subject, var_site, var_species, missingness, position_aware, rng)` — multi-protein
+- `experiment.py` `Experiment(n_proteins, …, repeat_units, miscleavage_rate, miscleavage_model, digestion, var_subject, var_site, var_species, detection_limit, missingness, position_aware, rng)` — multi-protein
   study facade: `build()` (per-group proteins) → `observe()` (one **shared** `ObservationModel`, so
   `beta` is shared across proteins, `alpha` per protein; applies `missingness` per protein) →
   `roll_up(method)` (one `RollupResult` per protein) → `score(method, min_per_group)` = RMSE of
@@ -221,10 +235,11 @@ matrix), then a selectable transform.
 
 **Not yet implemented** (replication backlog): the **TMT-plex (block) missingness** variant (label-free
 MNAR is done); the LiP ProK-site table builder in `rollups/`; and the entire **LiP-MS** pipeline
-(masking, ProK digest, two-stage digestion). The **log2-`sum` magnitude gap** is now explained and
-closeable: it came from a long tail of rare miscleavage singletons (no coarser-granularity rewrite
-needed) — the new `ObservationModel.detection_limit` (≈3 copies) prunes them and brings log2-sum from
-~10 into the paper's ~3–4 while leaving mean/median and the ranking unchanged. The full PTM intensity +
+(masking, ProK digest, two-stage digestion). The **log2-`sum` magnitude gap is resolved**: source
+review showed the reference realizes missed cleavages **per subject** (one digestion per sample), not
+per copy — the new `digestion="per_subject"` mode reproduces this and brings log2-sum from ~10 to the
+paper's ~3–4 with no detection limit (`per_copy` stays the default/ground-truth-faithful mode; the
+canonical `scripts/run_ptm_sweep.py` uses `per_subject`). The full PTM intensity +
 stoichiometry roll-up is implemented (all three scalings
 `rollup`/`rrollup`/`zrollup`, mean/median/sum aggregations, linear/log2 `space`, the `min_per_group`
 presence filter, the PTM site-table builder, `roll_up`, `group_site_change`, `apply_missingness`, and

@@ -2,7 +2,9 @@
 
 PAPER_PTM_GRID (648 combos) x the 9 (scaling x aggregation) methods, averaged over N_REPLICATES
 Experiments each. Long-running (~30-50 min). Subjects are fixed (not a PTM sweep axis); 10 keeps the
-run tractable while preserving the method ranking (which is invariant to subject count).
+run tractable while preserving the method ranking (which is invariant to subject count). Uses the
+faithful per-subject digestion (the reference realizes missed cleavages once per sample, not per copy),
+so the log2-sum magnitude tracks the paper rather than the inflated per-copy value.
 
     uv run python scripts/run_ptm_sweep.py
 """
@@ -15,7 +17,7 @@ from quantproteomicssimbox.methods import paper_ptm_methods
 from quantproteomicssimbox.sweep import PAPER_PTM_GRID, records_to_rows, run_sweep
 
 N_REPLICATES = 5
-BASE = dict(n_groups=2, n_subjects=10)
+BASE = dict(n_groups=2, n_subjects=10, digestion="per_subject")
 OUT = pathlib.Path("results/ptm_sweep.csv")
 
 

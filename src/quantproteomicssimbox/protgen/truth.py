@@ -12,6 +12,7 @@ def make_group_proteins(
     abundance: int,
     miscleavage_rate: float = 0.0,
     miscleavage_model: str = "global",
+    digestion: str = "per_copy",
     rng: np.random.Generator | None = None,
 ) -> list[Protein]:
     """One ground-truth Protein per group: same sequence, independent per-group occupancy.
@@ -19,13 +20,14 @@ def make_group_proteins(
     Group differences come from independent m_r ~ U(1, M) draws, so each group gets its own true
     site abundances (a known per-site log2FC). The shared sequence keeps the observation layer's
     site effects (keyed on sequence) shared across groups — a site effect is measurement bias, not a
-    group difference. `miscleavage_model` selects the digest fork (see ``MISCLEAVAGE_MODELS``).
+    group difference. `miscleavage_model` selects the per-copy digest fork (see ``MISCLEAVAGE_MODELS``);
+    `digestion` selects the granularity (see ``DIGESTION_MODES``).
     """
     rng = rng if rng is not None else np.random.default_rng()
     proteins = []
     for _ in range(n_groups):
         protein = Protein(sequence, rng=rng)
-        protein.set_quantification(abundance, miscleavage_rate, miscleavage_model)
+        protein.set_quantification(abundance, miscleavage_rate, miscleavage_model, digestion)
         proteins.append(protein)
     return proteins
 

@@ -136,6 +136,17 @@ def test_detection_limit_curbs_log2_sum_inflation():
     assert exp(3).score(mean_method) < exp(1).score(sum_method)  # mean stays well below inflated sum
 
 
+def test_per_subject_digestion_curbs_log2_sum_without_detection_limit():
+    # The faithful (reference) per-subject digestion realizes missed cleavages once per sample instead
+    # of per copy, so each site carries far fewer peptide species per sample -> the log2-sum inflation
+    # collapses toward the paper's magnitude, with no detection limit needed.
+    sum_method = intensity_method("rollup", "sum", "log2")
+    kw = dict(var_subject=1.0, var_site=1.0, miscleavage_rate=0.5, protein_length=160, abundance=200)
+    per_copy = _experiment(digestion="per_copy", **kw).score(sum_method)
+    per_subject = _experiment(digestion="per_subject", **kw).score(sum_method)
+    assert per_subject < per_copy
+
+
 def test_zrollup_is_worst_scaling():
     # The paper's finding: z-scoring each peptide destroys the log2 scale, so zrollup has the highest
     # RMSE. Average a few seeds for a stable comparison against the no-scaling rollup.

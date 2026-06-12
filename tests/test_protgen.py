@@ -298,6 +298,56 @@ def test_bernoulli_is_reproducible_with_same_seed():
 
 
 # --------------------------------------------------------------------------- #
+# Digestion granularity: per_copy (default) vs per_subject (reference model)
+# --------------------------------------------------------------------------- #
+def test_unknown_digestion_raises(rng):
+    p = Protein("AKAR", rng=rng)
+    with pytest.raises(ValueError, match="unknown digestion"):
+        p.set_quantification(5, digestion="per_molecule")
+
+
+def test_per_subject_ground_truth_is_a_perfect_digest():
+    # per_subject keeps a *perfect* tryptic digest as the ground truth; missed cleavages are realized
+    # later, per subject. So every copy is fully cleaved in the Protein itself.
+    p = Protein("AAKAAKAAKAAR", rng=np.random.default_rng(0))
+    p.set_quantification(20, miscleavage_rate=0.5, digestion="per_subject")
+    assert all(copy == p.digestion_sites for copy in p.digestion_map)
+
+
+def test_per_subject_subjects_get_different_digestions():
+    p = Protein("AAKAAKAAKAAR", rng=np.random.default_rng(0))
+    p.set_quantification(30, miscleavage_rate=0.5, digestion="per_subject")
+    perfect = frozenset((pep.start_index, pep.end_index) for pep in p.peptides)
+    subject_spans = [
+        frozenset((pep.start_index, pep.end_index) for pep in p.peptides_for_subject(np.random.default_rng(i)))
+        for i in range(8)
+    ]
+    assert len(set(subject_spans)) > 1  # subjects merge different boundaries
+    assert any(spans != perfect for spans in subject_spans)  # missed cleavages do merge peptides
+
+
+def test_per_subject_rate_zero_returns_the_perfect_peptides():
+    p = Protein("AAKAAKAAR", rng=np.random.default_rng(0))
+    p.set_quantification(20, miscleavage_rate=0.0, digestion="per_subject")
+    perfect = {(pep.start_index, pep.end_index) for pep in p.peptides}
+    subject = {(pep.start_index, pep.end_index) for pep in p.peptides_for_subject(np.random.default_rng(1))}
+    assert subject == perfect
+
+
+def test_digestion_mode_leaves_occupancy_truth_unchanged():
+    # Occupancy (m_r ~ U(1,M)) is drawn before digestion, so the per-site truth is identical across
+    # digestion modes for the same seed — digestion granularity changes estimation, not ground truth.
+    seq = ProteinGenerator(rng=np.random.default_rng(0)).generate_sequence(120)
+
+    def occupancy(digestion):
+        p = Protein(seq, rng=np.random.default_rng(1))
+        p.set_quantification(200, miscleavage_rate=0.5, digestion=digestion)
+        return p.true_site_abundances()
+
+    assert occupancy("per_copy") == occupancy("per_subject")
+
+
+# --------------------------------------------------------------------------- #
 # Peptide quantification (Protein.peptides)
 # --------------------------------------------------------------------------- #
 def test_peptides_exact_for_unmodified_sequence(rng):

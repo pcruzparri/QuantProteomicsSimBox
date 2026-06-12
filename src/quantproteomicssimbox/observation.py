@@ -86,7 +86,7 @@ class ObservationModel:
         beta = self.subject_effects[subject_key]
 
         observed: list[Peptide] = []
-        for pep in protein.peptides:
+        for pep in protein.peptides_for_subject(self.rng):  # per-copy: shared set; per-subject: re-digest
             if pep.abundance < self.detection_limit:
                 continue  # below the limit of detection: too few copies produce this peptide species
             exponent = beta  # log2-space shift = beta_ik + sum_{r in S} alpha_r (+ gamma_p) (Eq. 3)

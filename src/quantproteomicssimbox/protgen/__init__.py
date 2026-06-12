@@ -8,7 +8,7 @@ re-exported here, so ``from quantproteomicssimbox.protgen import X`` keeps worki
 
 from .generator import AMINO_ACIDS, ProteinGenerator
 from .peptide import Peptide
-from .protein import MISCLEAVAGE_MODELS, Protein
+from .protein import DIGESTION_MODES, MISCLEAVAGE_MODELS, Protein
 from .truth import (
     make_group_proteins,
     true_site_log2_fold_change,
@@ -19,6 +19,7 @@ __all__ = [
     "Peptide",
     "Protein",
     "MISCLEAVAGE_MODELS",
+    "DIGESTION_MODES",
     "ProteinGenerator",
     "AMINO_ACIDS",
     "make_group_proteins",

@@ -27,6 +27,7 @@ class Experiment:
         repeat_unit_length: int = 8,
         miscleavage_rate: float = 0.0,
         miscleavage_model: str = "global",
+        digestion: str = "per_copy",
         var_subject: float = 0.0,
         var_site: float = 0.0,
         var_species: float = 0.0,
@@ -43,7 +44,8 @@ class Experiment:
         self.repeat_units = repeat_units  # identical repeated peptides per protein (0 = none)
         self.repeat_unit_length = repeat_unit_length
         self.miscleavage_rate = miscleavage_rate
-        self.miscleavage_model = miscleavage_model  # digest fork: "global" | "bernoulli"
+        self.miscleavage_model = miscleavage_model  # per-copy digest fork: "global" | "bernoulli"
+        self.digestion = digestion  # granularity: "per_copy" | "per_subject"
         self.missingness = missingness  # global induced-missingness rate (abundance-dependent)
         self.rng = rng if rng is not None else np.random.default_rng()
         # One model across all proteins: beta per (group, subject) shared; alpha per (sequence, site).
@@ -72,6 +74,7 @@ class Experiment:
                 self.abundance,
                 self.miscleavage_rate,
                 self.miscleavage_model,
+                self.digestion,
                 self.rng,
             )
             for _ in range(self.n_proteins)
