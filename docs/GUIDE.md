@@ -15,11 +15,12 @@ This guide is the friendly entry point. For a dense code-to-paper reference, see
 3. [Architecture & code map](#3-architecture--code-map)
 4. [Install & quickstart](#4-install--quickstart)
 5. [Usage patterns](#5-usage-patterns)
-6. [The experimental knobs (the tree)](#6-the-experimental-knobs-the-tree)
-7. [Experiment recipes (question → settings)](#7-experiment-recipes-question--settings)
-8. [What we've found so far](#8-what-weve-found-so-far)
-9. [Extending the framework](#9-extending-the-framework)
-10. [Reference tables](#10-reference-tables)
+6. [Inside the methods: the math, step by step](#6-inside-the-methods-the-math-step-by-step)
+7. [The experimental knobs (the tree)](#7-the-experimental-knobs-the-tree)
+8. [Experiment recipes (question → settings)](#8-experiment-recipes-question--settings)
+9. [What we've found so far](#9-what-weve-found-so-far)
+10. [Extending the framework](#10-extending-the-framework)
+11. [Reference tables](#11-reference-tables)
 
 ---
 
@@ -188,11 +189,140 @@ The full paper grid (`PAPER_PTM_GRID`, 648 combos) and a ready-made runner live 
 
 **Explore interactively.** The notebook
 [`playground.ipynb`](../src/quantproteomicssimbox/playground.ipynb) has worked figures for every topic
-in §7–8.
+in §8–9.
 
 ---
 
-## 6. The experimental knobs (the tree)
+## 6. Inside the methods: the math, step by step
+
+This section traces a number from the simulated instrument all the way to the final score. Notation:
+a protein has **M** copies; a *site* `r` is one serine; group `g ∈ {A, B}`, subject (sample) `s`.
+
+### 6.1 What's observed
+
+Each ground-truth peptide *species* has a true **copy count** `c` — how many of the M copies produced
+exactly that span + modification pattern. The observation model turns `c` into a measured intensity for
+sample `(g, s)`:
+
+```
+x  =  c · 2^( β_{g,s}  +  Σ_{r ∈ mods}  α_r   +  γ_p )
+```
+
+- `β_{g,s} ~ Normal(0, var_subject)` — one **per-sample** shift, the same for every peptide in that sample.
+- `α_r ~ Normal(0, var_site)` — a **per-site** shift, added once for *each modified site* `r` the peptide
+  carries (so it touches only modified forms).
+- `γ_p ~ Normal(0, var_species)` — a **per-peptide-sequence** shift (ionization efficiency), shared by all
+  mod-forms of that backbone (only applied when `var_species > 0`).
+
+Effects are in **log2** space (they're exponents of 2), and each is drawn once and cached. After this,
+indistinguishable peptides in the sample are **summed** (`aggregate_peptides`; position-agnostic by
+default), peptides from fewer than `detection_limit` copies are dropped, and a fraction of `(sample,
+peptide)` measurements are deleted as missing (`→ NaN`, low-abundance lost more often). The result handed
+to roll-up is, per sample, a set of observed peptide intensities `x`.
+
+### 6.2 Intensity roll-up — one value per site, per sample
+
+For site `r`, take every observed peptide that is **modified at `r`** and lay them out as a matrix `X`:
+one **row per peptide species**, one **column per sample** (`NaN` where unobserved). Then, in order:
+
+1. **Presence filter** — drop peptide rows not seen in ≥ `min_per_group` samples of *every* group.
+2. **Space** `T(·)` — `log2(x)` (the paper / pmartR convention) or identity for `linear`.
+3. **Scale** (peptide-wise, the paper's stage 1):
+   - `rollup` — nothing.
+   - `rrollup` — *re-reference*: pick the most-observed peptide as reference; shift every other row by the
+     median over samples of `(reference − row)`, putting all peptides on the reference's level.
+   - `zrollup` — *z-score* each row: `(row − mean_row) / sd_row`.
+4. **Aggregate** down the peptide axis (the paper's stage 2) to one value per sample: `mean`, `median`,
+   or `sum` (NaN-aware).
+
+In one line, the site value in sample `j` is
+
+```
+v_{r,j}  =  aggregate_i (  scale (  T( x_{i,j} )  )  )      over peptides i modified at r
+```
+
+Plain English: *log the modified-peptide intensities at the site, optionally re-level or standardise each
+peptide, then collapse the peptides into one number per sample.* (Why the combinations matter: in log2
+space `sum` grows with the number of peptides, so it's biased; `mean`/`median` aren't. In linear space
+it flips.)
+
+### 6.3 Stoichiometry roll-up — the *fraction modified* per site, per sample
+
+Here we want a fraction, so we need both the modified signal **and** the total signal at the site. For
+serine `r`, consider every observed peptide whose span `[start, end]` **covers `r`** — modified or not.
+
+**Pooled** (one ratio of sums):
+```
+mod_{r,j}   = Σ intensities of peptides covering r that are modified at r   (in sample j)
+total_{r,j} = Σ intensities of all peptides covering r                      (in sample j)
+f_{r,j}     = mod_{r,j} / total_{r,j}          (pooled_pseudocount: (mod + 0.5)/(total + 1))
+```
+
+**Per-peptide** (average of per-peptide fractions): for each distinct span covering `r`, first take *that
+span's own* fraction `f_span = (its modified intensity) / (its total intensity)`, then aggregate over
+spans — `peptide_mean = mean_span f_span`, `peptide_median = median_span f_span`. Because each span's
+fraction cancels that span's own abundance/ionization, this is robust to between-peptide abundance
+differences (it cancels `γ_p`), where the pooled ratio is dominated by the loudest peptide.
+
+**Transform** to the site value `v_{r,j}`:
+- `fraction` — `v = f`.
+- `logit` — `v = logit2(f) = log2( f / (1 − f) )`, with `f` clamped to `[ε, 1−ε]` so 0 %/100 % stays finite.
+
+### 6.4 Aggregating subjects, then comparing groups
+
+Both families now have a per-site value `v_{r,j}` for each sample, living in some **space**
+(`log2` / `linear` / `fraction` / `logit`). `group_site_change` reduces this to one number per site:
+
+1. **Aggregate subjects** — average the site's value over each group's samples (nan-aware):
+   `m_A = mean_{j∈A} v_{r,j}`, `m_B = mean_{j∈B} v_{r,j}`.
+2. **Compare groups**, matched to the space:
+   - **log space** (`log2`, `logit`): `Δ_r = m_B − m_A` — a *difference* (a log fold-change, or a change in
+     log-odds for logit).
+   - **ratio space** (`linear`, `fraction`): `Δ_r = log2( m_B / m_A )` — a *log2 ratio*.
+
+So subjects are pooled by a plain per-group average, and groups by a difference (in log space) or a
+log2-ratio (in ratio space). Either way the answer lands on a **log2 scale**, comparable to the truth.
+
+### 6.5 The truth, and the score (truth vs observation)
+
+The truth is computed from the **planted occupancy**, never from the noisy observation. Let `m_r^g` be the
+number of copies modified at `r` in group `g`, and `s_r^g = m_r^g / M` the true stoichiometry. The change
+the method *should* recover (matched to what it estimates):
+
+| method family | true change `Δ*_r` |
+|---|---|
+| intensity | `log2( m_r^B / m_r^A )`  (occupancy log2 fold-change) |
+| stoichiometry `fraction` | `log2( s_r^B / s_r^A )` |
+| stoichiometry `logit` | `logit2(s_r^B) − logit2(s_r^A)` |
+
+(With a shared `M`, the fraction truth equals the occupancy fold-change — they coincide by construction,
+which the code notes.) The **score** for a method is the RMSE over every site of every protein, using only
+sites where the estimate is finite:
+
+```
+RMSE  =  sqrt(  mean_r  ( Δ_r  −  Δ*_r )²  )
+```
+
+Because a `QuantMethod` bundles its roll-up **and** its matching truth function, the comparison is always
+apples-to-apples: a logit estimate is scored against a logit truth, a fold-change estimate against a
+fold-change truth.
+
+### 6.6 The whole trace in one line
+
+```
+observe   x = c · 2^(β + Σα + γ)
+   │
+intensity:   v = aggregate( scale( log2 x ) )  over modified peptides
+stoich:      v = transform( mod / total )      pooled, or mean/median of per-span fractions
+   │
+subjects:    m_g = mean over group g's samples of v
+groups:      Δ = m_B − m_A      (log/logit)      or   log2(m_B / m_A)   (linear/fraction)
+score:       RMSE = sqrt( mean_sites ( Δ − Δ* )² ),   Δ* from the planted occupancy
+```
+
+---
+
+## 7. The experimental knobs (the tree)
 
 Everything you can control is a keyword on `Experiment(...)` (plus the method you score). They split
 cleanly by pipeline stage. Read this as a tree of *what you can branch on*:
@@ -242,7 +372,7 @@ A few plain-English notes on the less obvious knobs:
 - **The three variances.** Think of them as three independent "dials of messiness." `var_subject` shifts
   a whole sample; `var_site` shifts only the *modified* form of a site; `var_species` shifts a whole
   peptide backbone (its ionization efficiency). Which dial you turn decides which method looks good
-  (see §7).
+  (see §8).
 - **`position_aware`.** Bottom-up MS often can't tell two identical peptide sequences apart even if they
   came from different places on the protein. `position_aware=False` (the realistic default) merges them;
   `True` keeps them separate (an idealized instrument). Combine with `repeat_units` to stress-test it.
@@ -251,7 +381,7 @@ A few plain-English notes on the less obvious knobs:
 
 ---
 
-## 7. Experiment recipes (question → settings)
+## 8. Experiment recipes (question → settings)
 
 Each research question lights up a different branch of the tree above. Set the knobs that matter and
 leave the rest at defaults.
@@ -298,7 +428,7 @@ leave the rest at defaults.
 
 ---
 
-## 8. What we've found so far
+## 9. What we've found so far
 
 - **Intensity ranking reproduces the paper.** Over the full 648-combo grid (`results/ptm_sweep.csv`,
   `per_subject` digestion): `rollup` mean 1.13 / median 1.16 / **sum 2.98**; `zrollup` is worst for
@@ -318,7 +448,7 @@ leave the rest at defaults.
 
 ---
 
-## 9. Extending the framework
+## 10. Extending the framework
 
 The design is registries + one scoring loop, so most extensions are small, local additions:
 
@@ -337,7 +467,7 @@ second application the framework is structured to host alongside PTM.
 
 ---
 
-## 10. Reference tables
+## 11. Reference tables
 
 **`Experiment(...)` knobs** (defaults in parentheses):
 
