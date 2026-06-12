@@ -7,7 +7,7 @@ It replicates (and extends) VonKaenel et al., *J. Proteome Res.* 2026 (DOI `10.1
 
 This guide is the friendly entry point. For a dense code-to-paper reference, see
 [`AGENTS.md`](../AGENTS.md). For runnable examples, see the notebook at
-[`src/quantproteomicssimbox/playground.ipynb`](../src/quantproteomicssimbox/playground.ipynb).
+[`notebooks/playground.ipynb`](../notebooks/playground.ipynb).
 
 ## Contents
 1. [The big idea (plain English)](#1-the-big-idea-plain-english)
@@ -188,7 +188,7 @@ The full paper grid (`PAPER_PTM_GRID`, 648 combos) and a ready-made runner live 
 `results/ptm_sweep.csv`.
 
 **Explore interactively.** The notebook
-[`playground.ipynb`](../src/quantproteomicssimbox/playground.ipynb) has worked figures for every topic
+[`playground.ipynb`](../notebooks/playground.ipynb) has worked figures for every topic
 in §8–9.
 
 ---

@@ -250,7 +250,7 @@ implemented (see the Stoichiometry roll-up section above); its remaining explora
 the backlog below.
 
 **Stoichiometry exploration** (per-site fraction = mod abundance / total spanning abundance, with
-`fraction` / `logit` transforms; sweeps live in `playground.ipynb` §C1–C2 via `sweep.run_sweep`):
+`fraction` / `logit` transforms; sweeps live in `notebooks/playground.ipynb` §C1–C2 via `sweep.run_sweep`):
 - **Position-aware vs position-agnostic denominator** *(C1, characterized)* — the spanning-abundance
   denominator is exact only under **position-aware** grouping; the agnostic cross-loci merge
   (`aggregate_peptides`, `position_aware=False`) collapses same-sequence peptides and mis-attributes
@@ -343,4 +343,4 @@ the backlog below.
 
 ## Notebook
 
-- `playground.ipynb` exists in the package directory — may contain exploratory code or examples. Treat it as scratch space, not a definitive source of truth.
+- `notebooks/playground.ipynb` holds exploratory figures/examples. Treat it as scratch space, not a definitive source of truth. It puts the repo's `src/` on `sys.path` (`os.path.abspath("../src")`), so it runs from the `notebooks/` directory without an editable install.

@@ -31,7 +31,7 @@ uv run pytest    # run the test suite
 - **[docs/GUIDE.md](docs/GUIDE.md)** — the instructional guide: architecture, usage, the full knob tree,
   and experiment recipes (what to set to study each question), in plain English.
 - **[AGENTS.md](AGENTS.md)** — dense code-to-paper reference and the project backlog.
-- **[src/quantproteomicssimbox/playground.ipynb](src/quantproteomicssimbox/playground.ipynb)** — worked
+- **[notebooks/playground.ipynb](notebooks/playground.ipynb)** — worked
   figures for every topic.
 - **[scripts/run_ptm_sweep.py](scripts/run_ptm_sweep.py)** — the full paper sweep; output in
   `results/ptm_sweep.csv`.
